@@ -1,0 +1,24 @@
+# Requirements for the REAL CARLA-attached path (src/simulation/carla_bridge.py)
+# ONLY. These are NOT installed into this project's main .venv, and cannot
+# be: the official `carla` PyPI wheels for 0.9.13-0.9.15 only support
+# CPython 3.7-3.10 on Linux, while this project's main venv is Python 3.12
+# (see requirements.txt / docs/SETUP.md). There is no version overlap.
+#
+# To actually exercise the CARLA-attached path (not just the local
+# kinematic fallback), on a machine with a discrete GPU and a running
+# CARLA 0.9.15 server:
+#
+#   python3.10 -m venv .venv-carla
+#   source .venv-carla/bin/activate
+#   pip install -r requirements-carla.txt
+#   pip install -r requirements.txt   # this venv also needs the project's
+#                                      # other deps (torch, opencv, etc.) to
+#                                      # call into feature_extraction.py /
+#                                      # odd_classifier.py / rss_safety.py
+#   python -m src.simulation.closed_loop_runner --num_ticks 50
+#
+# See docs/SETUP.md's "Optional: CARLA closed-loop simulation" section and
+# docs/FUTURE_STEPS.md for the full walkthrough, including how to point
+# configs/carla_config.json at a remote GPU-capable machine instead of a
+# local one (host/port are both tunable there).
+carla==0.9.15

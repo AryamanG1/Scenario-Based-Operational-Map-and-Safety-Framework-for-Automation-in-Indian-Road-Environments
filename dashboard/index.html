@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>ODD Automation Readiness Map — Chandigarh</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="sidebar">
+    <h1>ODD Automation Readiness</h1>
+    <p class="subtitle">Chandigarh Road Network</p>
+
+    <span class="label">Current Scenario</span>
+    <div id="scenario-label">
+      <span id="scenario-value">Initializing…</span>
+    </div>
+
+    <span class="label">Road Counts by Automation Level</span>
+    <div id="counts">
+      <div class="count-row"><span class="dot dot-l3"></span> Level 3 (Full Automation) <span id="count-l3">0</span></div>
+      <div class="count-row"><span class="dot dot-l2"></span> Level 2 (Supervised) <span id="count-l2">0</span></div>
+      <div class="count-row"><span class="dot dot-l1"></span> Level 1 (Driver Takeover) <span id="count-l1">0</span></div>
+    </div>
+
+    <span class="label">Legend</span>
+    <div id="legend">
+      <div class="legend-row"><span class="dot dot-l3"></span> Score &ge; 70 — Full Automation</div>
+      <div class="legend-row"><span class="dot dot-l2"></span> Score 40–69 — Supervised</div>
+      <div class="legend-row"><span class="dot dot-l1"></span> Score &lt; 40 — Driver Takeover</div>
+    </div>
+
+    <span class="label">Real Pipeline Results (IDD-Lite)</span>
+    <div id="pipeline-stats">
+      <p class="pipeline-note">Run <code>python feasibility_map.py</code> to populate this panel with real results.</p>
+    </div>
+
+    <span class="label">Stage 8: Closed-Loop Simulation Replay</span>
+    <div id="carla-live-stats">
+      <p class="pipeline-note">Run <code>python -m src.simulation.closed_loop_runner</code> to populate this panel and animate a replay marker on the map.</p>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="pipeline_stats.js"></script>
+  <script src="carla_live.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

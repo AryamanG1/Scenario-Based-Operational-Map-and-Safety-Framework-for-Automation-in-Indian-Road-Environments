@@ -1,0 +1,19 @@
+# CPU-only torch/torchvision: install these two BEFORE the rest of this file
+# to avoid pulling the multi-GB default CUDA dependency chain on machines
+# without an NVIDIA GPU:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+torch==2.13.0
+torchvision==0.28.0
+ultralytics==8.4.115
+opencv-python==5.0.0.93
+numpy==2.4.4
+pandas==3.0.5
+scikit-learn==1.9.0
+scipy==1.18.0
+matplotlib==3.11.1
+seaborn==0.13.2
+joblib==1.5.3
+tqdm==4.70.0
+Pillow==12.2.0
+pytest==9.1.1
