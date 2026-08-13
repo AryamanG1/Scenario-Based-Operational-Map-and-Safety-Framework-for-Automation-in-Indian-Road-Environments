@@ -56,16 +56,23 @@ def train_segnet(
     epochs: int = 30,
     batch_size: int = 8,
     save_path: str = "refined_segnet.pth",
+    class_weights: Optional[torch.Tensor] = None,
+    initial_state_dict: Optional[dict] = None,
+    lr: float = 0.001,
 ) -> Tuple[List[float], List[float]]
 ```
 
 Trains a SegNet model on cleaned IDD-Lite images/labels.
 
 - **Args:** `images` — `uint8` array `(M, 224, 320, 3)`; `labels` — `uint8` array `(M, 224, 320)`; `epochs`, `batch_size`; `save_path` — where the trained `state_dict` is saved.
+- **Optional args (all three default to the original from-scratch, equally-weighted behavior):**
+  - `class_weights` — per-class loss weights of length `NUM_CLASSES`, passed straight to `nn.CrossEntropyLoss(weight=...)` and moved to `DEVICE`. `None` weights all 8 classes equally. Exists because IDD-Lite's 8 classes are severely imbalanced — measured pixel frequency runs from drivable-area at ~32% down to void at ~0.01%, a >3000× gap — so an unweighted loss leaves little incentive to learn the rare classes: pixel accuracy looks fine (it is dominated by the common classes) while mIoU, which averages per-class IoU equally, suffers.
+  - `initial_state_dict` — a `state_dict` loaded into the model *before* training starts, to fine-tune an existing checkpoint instead of starting from random initialization. `None` trains a freshly initialized `SegNet` from scratch.
+  - `lr` — Adam learning rate. Broken out as a parameter because fine-tuning an existing checkpoint generally wants a lower rate than the 0.001 used for from-scratch training.
 - **Returns:** `(train_losses, val_losses)`, one float per epoch.
 - Converts images to a float tensor via `.permute(0, 3, 1, 2).float() / 255.0` and labels via `.long()`.
 - Splits into train/val with `sklearn.model_selection.train_test_split(test_size=0.2, random_state=RANDOM_STATE)`.
-- Optimizer: `Adam(lr=0.001)`; scheduler: `StepLR(step_size=10, gamma=0.5)`; loss: `nn.CrossEntropyLoss()`.
+- Optimizer: `Adam(lr=lr)`; scheduler: `StepLR(step_size=10, gamma=0.5)`; loss: `nn.CrossEntropyLoss(weight=class_weights)`.
 - Uses `torch.amp.GradScaler(DEVICE.type, enabled=(DEVICE.type == "cuda"))` and `torch.autocast(device_type=DEVICE.type, enabled=(DEVICE.type == "cuda"))` for both training and validation forward passes — disabled (no-op) on CPU.
 - Prints one line per epoch: `f"Epoch {epoch}/{epochs} | LR: {current_lr:.6f} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}"`.
 - Saves the trained `state_dict` to `save_path` at the end and prints a confirmation.
@@ -96,14 +103,15 @@ Visualizes a single SegNet prediction against its ground truth.
 ## Key Design Decisions & Edge Cases
 
 - **CPU fallback is a deliberate, documented no-op, not a missing feature.** The module's own comment on the `GradScaler` line states: *"GradScaler/autocast are CUDA-only accelerations; enabled=False on CPU makes this a correct (if unaccelerated) no-op fallback per spec Rule #2."* This means training still runs correctly on machines without a discrete GPU (as noted in the top-level README's "Known scope limitations" — this project's development machine has no discrete GPU), just without mixed-precision speedup.
-- **Reproducibility:** a fixed `torch.manual_seed(RANDOM_STATE)` (42) at import time and the same `RANDOM_STATE` used for the `train_test_split`.
+- **Reproducibility:** a fixed `torch.manual_seed(RANDOM_STATE)` (42) at import time and the same `RANDOM_STATE` used for the `train_test_split`. The fixed split seed is what makes fine-tuning via `initial_state_dict` safe — a resumed run sees the same train/val partition as the original, so no validation image leaks into training.
+- **`class_weights`/`initial_state_dict`/`lr` are strictly additive.** All three default to values that reproduce the original behavior exactly (`None`, `None`, `0.001`), so every existing caller — `main.py`, the `__main__` block, the tests — is unaffected. They exist to support class-weighted fine-tuning of an already-trained checkpoint without forking the training loop into a second near-duplicate function.
 - **BGR→RGB channel flip in visualization** (`[..., ::-1]`) exists specifically because upstream images are loaded with `cv2.imread`, which returns BGR, not RGB — without the flip, `visualize_prediction`'s input-image panel would render with swapped red/blue channels.
 - **Dropout only at the bottleneck** (`Dropout2d(p=0.3)` at the end of the encoder) — the decoder has no dropout, a common regularization placement pattern for encoder-decoder segmentation nets to control overfitting without disrupting the reconstruction path.
 - No explicit handling for `epochs=0` or empty `images`/`labels` arrays — the module assumes valid, non-empty, pre-cleaned input as produced by `data_pipeline.load_and_clean_dataset`.
 
 ## Dependencies
 
-- **Standard library:** `os`, `typing.List`, `typing.Tuple`
+- **Standard library:** `os`, `typing.List`, `typing.Optional`, `typing.Tuple`
 - **External:** `matplotlib.pyplot`, `numpy`, `torch`, `torch.nn`, `sklearn.model_selection.train_test_split`, `torch.optim.Adam`, `torch.optim.lr_scheduler.StepLR`, `torch.utils.data.DataLoader`, `torch.utils.data.TensorDataset`
 - **Internal:** `src.common.paths.PLOTS_DIR` (module level, used by `plot_training_curves`/`visualize_prediction`). The `__main__` block additionally imports `src.common.paths.DATA_DIR`, `src.common.paths.MODELS_DIR`, `src.common.paths.SEGNET_CHECKPOINT`, and `src.perception.data_pipeline.load_and_clean_dataset`.
 
@@ -119,6 +127,33 @@ plot_training_curves(train_losses, val_losses)
 
 model = load_segnet("models/refined_segnet.pth")
 ```
+
+Fine-tuning an existing checkpoint with a class-weighted loss (the
+`class_weights`/`initial_state_dict`/`lr` path — all three are used together, since
+fine-tuning wants a warm start *and* a lower learning rate):
+
+```python
+import numpy as np, torch
+from src.perception.segnet_model import NUM_CLASSES, load_segnet, train_segnet
+
+# ENet-style weights: 1 / ln(1.02 + freq) bounds the range to roughly 3-50,
+# instead of raw inverse frequency's ~885x spread for the rarest class.
+counts = np.array([(labels == c).sum() for c in range(NUM_CLASSES)], dtype=np.int64)
+weights = torch.tensor(1.0 / np.log(1.02 + counts / counts.sum()), dtype=torch.float32)
+
+train_segnet(
+    images, labels, epochs=10, batch_size=8,
+    save_path="models/refined_segnet.pth",
+    class_weights=weights,
+    initial_state_dict=load_segnet("models/refined_segnet.pth").state_dict(),
+    lr=0.0005,
+)
+```
+
+Note that `save_path` here overwrites the checkpoint being fine-tuned; point it
+elsewhere to keep both. `plot_training_curves` also always writes to the same
+fixed `segnet_training_curves.png`, so back that file up first if the original
+from-scratch curve still matters.
 
 ## Running Standalone
 

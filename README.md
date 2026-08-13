@@ -15,6 +15,7 @@ This system targets **SAE Level 2 (Partial Driving Automation)** per SAE J3016 �
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Package layout, dependency DAG, cross-stage data flow, how to run everything |
 | [`docs/FORMULA_PROVENANCE.md`](docs/FORMULA_PROVENANCE.md) | Full paper → equation → module citation table, including rejected/corrected citations |
 | [`docs/DATASET_NOTES.md`](docs/DATASET_NOTES.md) | The IDD-Lite class-mapping bug found and fixed during development |
+| [`docs/DASHBOARD_ROAD_DATA.md`](docs/DASHBOARD_ROAD_DATA.md) | Where the dashboard's road geometry comes from (OpenStreetMap/Overpass) and how to regenerate it |
 | [`docs/SETUP.md`](docs/SETUP.md) | Environment setup, first run, tests, dashboard, optional CARLA setup |
 | [`docs/FUTURE_STEPS.md`](docs/FUTURE_STEPS.md) | What's next: real CARLA hardware setup, live dashboard polling, KITTI validation, and other stretch items |
 | [`docs/modules/<package>/<module>.md`](docs/modules/) | One detailed doc per source module (purpose, formula provenance, full public API, design decisions, usage example) — 23 files, one per file under `src/` |
@@ -133,7 +134,7 @@ python -m pytest tests/ -q                                                  # ru
 
 Every module is also independently runnable via `python -m src.<package>.<module>` from the project root (e.g. `python -m src.odd.rss_safety`, `python -m src.odd.fuzzy_odd`) — this `-m` convention is required (rather than `python src/odd/rss_safety.py`) because the codebase is organized as real importable subpackages; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for why.
 
-**Visualizing the road map / automation-readiness dashboard:** open `dashboard/index.html` directly in a browser (no server needed) — it works over plain `file://`. Run `python -m src.decision.feasibility_map` first to populate its "Real Pipeline Results" panel with real IDD-Lite statistics, and/or `python -m src.simulation.closed_loop_runner --num_ticks 50 --force_fallback` to populate the "Stage 8: Closed-Loop Simulation Replay" panel and animate a moving marker (colored by Normal/Degraded/Takeover mode) along a road polyline. Re-open (or refresh) `index.html` after either command to see the updated data — both write plain `.js` files the dashboard reads at page load, no live connection needed.
+**Visualizing the road map / automation-readiness dashboard:** open `dashboard/index.html` directly in a browser (no server needed) — it works over plain `file://`. The road network drawn on the map is real OpenStreetMap geometry for central Chandigarh, not hand-drawn approximations ([`docs/DASHBOARD_ROAD_DATA.md`](docs/DASHBOARD_ROAD_DATA.md)); the per-road ODD-readiness *scores* painted onto it are synthetic demo values. Run `python -m src.decision.feasibility_map` first to populate its "Real Pipeline Results" panel with real IDD-Lite statistics, and/or `python -m src.simulation.closed_loop_runner --num_ticks 50 --force_fallback` to populate the "Stage 8: Closed-Loop Simulation Replay" panel and animate a moving marker (colored by Normal/Degraded/Takeover mode) along a road polyline. Re-open (or refresh) `index.html` after either command to see the updated data — both write plain `.js` files the dashboard reads at page load, no live connection needed.
 
 ## Modules
 
@@ -163,7 +164,7 @@ Every module is also independently runnable via `python -m src.<package>.<module
 | `src/simulation/local_kinematic_sim.py` | 8 | No-CARLA fallback: real IDD-Lite frames + a kinematic stepper | [doc](docs/modules/simulation/local_kinematic_sim.md) |
 | `src/simulation/closed_loop_runner.py` | 8 | Closed-loop simulation orchestrator (the primary Stage 8 entry point) | [doc](docs/modules/simulation/closed_loop_runner.md) |
 | `main.py` | — | Orchestrates all 7 stages, plus optional Stage 8 via `--carla` | — |
-| `dashboard/` | — | Leaflet.js map (synthetic Chandigarh demo) + real pipeline-results panel + Stage 8 replay marker | — |
+| `dashboard/` | — | Leaflet.js map (real OpenStreetMap Chandigarh geometry, synthetic demo scoring) + real pipeline-results panel + Stage 8 replay marker | [doc](docs/DASHBOARD_ROAD_DATA.md) |
 
 ## A dataset-mapping correction found during development
 

@@ -6,7 +6,7 @@ regularization at the bottleneck.
 """
 
 import os
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -96,6 +96,9 @@ def train_segnet(
     epochs: int = 30,
     batch_size: int = 8,
     save_path: str = "refined_segnet.pth",
+    class_weights: Optional[torch.Tensor] = None,
+    initial_state_dict: Optional[dict] = None,
+    lr: float = 0.001,
 ) -> Tuple[List[float], List[float]]:
     """Trains a SegNet model on cleaned IDD-Lite images/labels.
 
@@ -105,6 +108,15 @@ def train_segnet(
         epochs: Number of training epochs.
         batch_size: Mini-batch size.
         save_path: Path to save the trained model's state_dict.
+        class_weights: Optional per-class loss weights (length NUM_CLASSES),
+            passed to nn.CrossEntropyLoss. If None, classes are weighted
+            equally (the original behavior).
+        initial_state_dict: Optional state_dict to initialize the model
+            with before training starts, for fine-tuning an existing
+            checkpoint instead of training from random initialization. If
+            None, a freshly initialized SegNet is trained from scratch
+            (the original behavior).
+        lr: Adam learning rate.
 
     Returns:
         A tuple (train_losses, val_losses), one value per epoch.
@@ -121,9 +133,13 @@ def train_segnet(
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
     model = SegNet().to(DEVICE)
-    optimizer = Adam(model.parameters(), lr=0.001)
+    if initial_state_dict is not None:
+        model.load_state_dict(initial_state_dict)
+    optimizer = Adam(model.parameters(), lr=lr)
     scheduler = StepLR(optimizer, step_size=10, gamma=0.5)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weights.to(DEVICE) if class_weights is not None else None
+    )
     # GradScaler/autocast are CUDA-only accelerations; enabled=False on CPU
     # makes this a correct (if unaccelerated) no-op fallback per spec Rule #2.
     scaler = torch.amp.GradScaler(DEVICE.type, enabled=(DEVICE.type == "cuda"))

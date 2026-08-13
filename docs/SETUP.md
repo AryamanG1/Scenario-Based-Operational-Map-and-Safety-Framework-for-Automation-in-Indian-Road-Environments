@@ -72,7 +72,7 @@ python -m src.decision.feasibility_map   # regenerates dashboard/pipeline_stats.
 python -m src.simulation.closed_loop_runner --num_ticks 50 --force_fallback   # regenerates dashboard/carla_live.js
 ```
 
-Then open `dashboard/index.html` directly in a browser — no local server needed (see `dashboard/app.js`'s module docstring for why: all data is inlined as JS, not fetched, since `fetch()` of local files is blocked by browsers under `file://`). The sidebar's "Real Pipeline Results" panel reflects the first command's output; the "Stage 8: Closed-Loop Simulation Replay" panel and the moving colored marker on the map reflect the second's — re-run either command and refresh the page to see updated data.
+Then open `dashboard/index.html` directly in a browser — no local server needed (see `dashboard/app.js`'s module docstring for why: all data is inlined as JS, not fetched, since `fetch()` of local files is blocked by browsers under `file://`). That same `file://` constraint is why the map's road geometry is a static array baked into `app.js` rather than a live OpenStreetMap query — see [`DASHBOARD_ROAD_DATA.md`](DASHBOARD_ROAD_DATA.md) if you need to regenerate it. The sidebar's "Real Pipeline Results" panel reflects the first command's output; the "Stage 8: Closed-Loop Simulation Replay" panel and the moving colored marker on the map reflect the second's — re-run either command and refresh the page to see updated data.
 
 ## Optional: CARLA closed-loop simulation
 

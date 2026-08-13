@@ -47,7 +47,9 @@ capstone_project/
     ├── ARCHITECTURE.md          # this file
     ├── FORMULA_PROVENANCE.md
     ├── DATASET_NOTES.md
+    ├── DASHBOARD_ROAD_DATA.md   # where dashboard/app.js's road geometry comes from
     ├── SETUP.md
+    ├── FUTURE_STEPS.md
     └── modules/<package>/<module>.md   # one doc per source module
 ```
 
