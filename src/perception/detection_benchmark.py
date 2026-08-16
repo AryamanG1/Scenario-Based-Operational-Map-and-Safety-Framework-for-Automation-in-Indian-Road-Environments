@@ -225,7 +225,8 @@ def auc_average_precision(sorted_tp_flags: List[bool], num_gt: int) -> float:
     recalls_with_origin = np.concatenate([[0.0], recalls])
     envelope_with_origin = np.concatenate([[envelope[0]], envelope])
 
-    return float(100.0 * np.trapezoid(envelope_with_origin, recalls_with_origin))
+    trapz_fn = getattr(np, "trapezoid", getattr(np, "trapz", None))
+    return float(100.0 * trapz_fn(envelope_with_origin, recalls_with_origin))
 
 
 def compute_mean_ap(ap_per_class: Dict[str, float]) -> float:
