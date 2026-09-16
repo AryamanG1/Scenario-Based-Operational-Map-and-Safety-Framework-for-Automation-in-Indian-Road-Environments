@@ -248,14 +248,53 @@ def visualize_prediction(
 
 
 if __name__ == "__main__":
-    from src.common.paths import DATA_DIR, MODELS_DIR, SEGNET_CHECKPOINT
-    from src.perception.data_pipeline import load_and_clean_dataset
+    import argparse
+
+    from src.common.paths import (
+        DATA_DIR,
+        IDD20K_DIR,
+        MODELS_DIR,
+        SEGNET_CHECKPOINT,
+        SEGNET_IDD20K_CHECKPOINT,
+    )
+
+    parser = argparse.ArgumentParser(description="Train SegNet on IDD-Lite or IDD-20K-II.")
+    parser.add_argument(
+        "--dataset",
+        choices=("idd-lite", "idd20k"),
+        default="idd-lite",
+        help="Training source. 'idd20k' rasterizes IDD-20K-II's polygon ground truth "
+        "(7,034 train frames) instead of reading IDD-Lite's 1,403 pre-rendered masks.",
+    )
+    parser.add_argument("--epochs", type=int, default=30, help="Training epochs.")
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=8,
+        help="Mini-batch size. 8 suits a CPU/small GPU; raise it substantially on an "
+        "80 GB H100 (e.g. 128) to keep the device busy.",
+    )
+    parser.add_argument("--limit", type=int, default=0, help="Cap on training frames (0 = all).")
+    parser.add_argument("--save_path", default=None, help="Checkpoint path (defaults per dataset).")
+    args = parser.parse_args()
 
     os.makedirs(MODELS_DIR, exist_ok=True)
-    save_path = SEGNET_CHECKPOINT
 
-    images, labels = load_and_clean_dataset(DATA_DIR)
-    train_losses, val_losses = train_segnet(images, labels, epochs=30, batch_size=8, save_path=save_path)
+    if args.dataset == "idd20k":
+        from src.perception.idd20k_polygon_pipeline import load_split
+
+        save_path = args.save_path or SEGNET_IDD20K_CHECKPOINT
+        images, labels = load_split(IDD20K_DIR, "train", limit=args.limit or None)
+    else:
+        from src.perception.data_pipeline import load_and_clean_dataset
+
+        save_path = args.save_path or SEGNET_CHECKPOINT
+        images, labels = load_and_clean_dataset(DATA_DIR)
+
+    print(f"Training on {len(images)} frames -> '{save_path}'")
+    train_losses, val_losses = train_segnet(
+        images, labels, epochs=args.epochs, batch_size=args.batch_size, save_path=save_path
+    )
     plot_training_curves(train_losses, val_losses)
 
     model = load_segnet(save_path)

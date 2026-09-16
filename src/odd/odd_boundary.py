@@ -227,7 +227,7 @@ DEFAULT_ODD_VARIABLES = [
 
 @dataclass
 class ODDCopulaModel:
-    """A fitted Gaussian-copula model of the joint ODD-space density.
+    """A fitted Gaussian copula model of the joint ODD space density.
 
     Attributes:
         variables: The variable names this model was fit over, in order.

@@ -275,6 +275,7 @@ def compute_features(
 
     pothole_heuristic_score, pothole_heuristic_count = detect_pothole_candidates(gray, mask)
 
+    # Finetune Checking 
     density_norm = min(traffic_density / 50, 1.0)
     tw_norm = min(num_two_wheelers / 20, 1.0)
     ped_norm = min(num_pedestrians / 20, 1.0)
@@ -315,6 +316,22 @@ def compute_features(
     }
 
 
+def predict_mask(img: np.ndarray, segnet_model: nn.Module) -> np.ndarray:
+    """Runs SegNet on one image and returns its predicted semantic mask.
+
+    Args:
+        img: BGR uint8 image of shape (H, W, 3).
+        segnet_model: A trained SegNet in eval mode.
+
+    Returns:
+        A uint8 mask of shape (H, W) holding per-pixel class IDs.
+    """
+    img_t = torch.tensor(img).permute(2, 0, 1).float().unsqueeze(0).to(DEVICE) / 255.0
+    with torch.no_grad():
+        output = segnet_model(img_t)
+    return output.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.uint8)
+
+
 def extract_all_features(
     images: np.ndarray,
     labels: np.ndarray,
@@ -344,11 +361,7 @@ def extract_all_features(
 
     for i in range(len(images)):
         img = images[i]
-        img_t = torch.tensor(img).permute(2, 0, 1).float().unsqueeze(0).to(DEVICE) / 255.0
-        with torch.no_grad():
-            output = segnet_model(img_t)
-        mask = output.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.uint8)
-
+        mask = predict_mask(img, segnet_model)
         detections = run_detection(img, yolo_model)
         rows.append(compute_features(img, mask, detections))
 
@@ -358,19 +371,163 @@ def extract_all_features(
     return df
 
 
+def extract_features_streaming(
+    pairs,
+    segnet_model: nn.Module,
+    yolo_model: YOLO,
+    save_path: str = "final_features_idd117k.csv",
+    gt_save_path: str = None,
+    flush_every: int = 500,
+) -> pd.DataFrame:
+    """Extracts features from IDD117K frames streamed one at a time from disk.
+
+    The array-based `extract_all_features` cannot be used on IDD117K: its
+    96,897-image train split is ~20.8 GB as a single uint8 array at 320x224x3,
+    before labels. This variant decodes one frame at a time and flushes rows
+    to CSV incrementally, so peak memory is independent of split size and a
+    long run that dies partway still leaves usable output on disk.
+
+    Feature columns are byte-identical to `extract_all_features`'s, so every
+    downstream stage (traffic density, fuzzy ODD, copula, classifier,
+    feasibility map) consumes this CSV unchanged.
+
+    Ground-truth object counts derived from the annotations are written to a
+    **separate** sidecar CSV, never into `save_path`:
+    `odd_classifier.load_and_clean_features` treats every column of the
+    feature CSV as a model input, so annotation-derived columns there would
+    leak ground truth into the classifier. The sidecar shares the feature
+    CSV's row order, so the two join positionally -- its purpose is to let
+    the uncalibrated AUTORICKSHAW_* bbox heuristic above finally be scored
+    against real 'autorickshaw' labels, which IDD-Lite never had.
+
+    Args:
+        pairs: (image_path, annotation_path) pairs from
+            `idd_detection_loader.list_pairs` (optionally subsampled).
+        segnet_model: A trained SegNet (IDD-Lite-trained; IDD117K has no masks).
+        yolo_model: A loaded Ultralytics YOLO model.
+        save_path: Where to write the feature CSV.
+        gt_save_path: Where to write the ground-truth sidecar CSV. None skips it.
+        flush_every: Rows to buffer before appending to disk.
+
+    Returns:
+        A DataFrame of the extracted feature rows.
+    """
+    from src.perception.idd_detection_loader import (
+        GROUP_ANIMAL,
+        GROUP_AUTORICKSHAW,
+        GROUP_PEDESTRIAN,
+        GROUP_TWO_WHEELER,
+        GROUP_VEHICLE,
+        group_of,
+        iter_frames,
+    )
+
+    segnet_model.eval()
+
+    gt_groups = {
+        "gt_num_vehicles": GROUP_VEHICLE,
+        "gt_num_two_wheelers": GROUP_TWO_WHEELER,
+        "gt_num_autorickshaws": GROUP_AUTORICKSHAW,
+        "gt_num_pedestrians": GROUP_PEDESTRIAN,
+        "gt_num_animals": GROUP_ANIMAL,
+    }
+
+    feature_rows, gt_rows = [], []
+    all_rows, all_gt_rows = [], []
+    written = 0
+
+    def _flush(final: bool = False) -> None:
+        """Appends buffered rows to the CSVs, writing headers only once."""
+        nonlocal feature_rows, gt_rows, written
+        if not feature_rows and not final:
+            return
+        if feature_rows:
+            pd.DataFrame(feature_rows).to_csv(
+                save_path, mode="a" if written else "w", header=not written, index=False
+            )
+            if gt_save_path:
+                pd.DataFrame(gt_rows).to_csv(
+                    gt_save_path, mode="a" if written else "w", header=not written, index=False
+                )
+            written += len(feature_rows)
+            print(f"  ... {written} frames processed")
+        feature_rows, gt_rows = [], []
+
+    for img, boxes in iter_frames(pairs):
+        mask = predict_mask(img, segnet_model)
+        detections = run_detection(img, yolo_model)
+
+        row = compute_features(img, mask, detections)
+        feature_rows.append(row)
+        all_rows.append(row)
+
+        if gt_save_path:
+            groups = [group_of(box["name"]) for box in boxes]
+            gt_row = {name: groups.count(group) for name, group in gt_groups.items()}
+            gt_rows.append(gt_row)
+            all_gt_rows.append(gt_row)
+
+        if len(feature_rows) >= flush_every:
+            _flush()
+
+    _flush(final=True)
+
+    print(f"Extracted {written} feature rows -> '{save_path}'")
+    if gt_save_path and written:
+        print(f"Wrote ground-truth object counts -> '{gt_save_path}'")
+    return pd.DataFrame(all_rows)
+
+
 if __name__ == "__main__":
-    from src.common.paths import DATA_DIR, FEATURES_CSV, SEGNET_CHECKPOINT, YOLO_WEIGHTS, ensure_output_dirs
-    from src.perception.data_pipeline import load_and_clean_dataset
+    import argparse
+
+    from src.common.paths import (
+        DATA_DIR,
+        FEATURES_CSV,
+        FEATURES_IDD117K_CSV,
+        FEATURES_IDD117K_GT_CSV,
+        IDD117K_95K_DIR,
+        SEGNET_CHECKPOINT,
+        YOLO_WEIGHTS,
+        ensure_output_dirs,
+    )
     from src.perception.segnet_model import load_segnet
 
+    parser = argparse.ArgumentParser(description="Extract the per-frame ODD feature vector.")
+    parser.add_argument(
+        "--dataset",
+        choices=("idd-lite", "idd117k"),
+        default="idd-lite",
+        help="Image corpus. SegNet is IDD-Lite-trained either way (IDD117K has no masks).",
+    )
+    parser.add_argument("--split", default="train", help="IDD117K split to extract from.")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=15000,
+        help="Frames to extract for idd117k (0 = all). The downstream copula/classifier "
+        "stages fit distributions, so a representative sample is sufficient.",
+    )
+    args = parser.parse_args()
+
     ensure_output_dirs()
-    dataset_dir = DATA_DIR
-    checkpoint_path = SEGNET_CHECKPOINT
-    yolo_weights_path = YOLO_WEIGHTS
-    csv_path = FEATURES_CSV
+    segnet = load_segnet(SEGNET_CHECKPOINT, device=DEVICE)
+    yolo = YOLO(YOLO_WEIGHTS)
 
-    images, labels = load_and_clean_dataset(dataset_dir)
-    segnet = load_segnet(checkpoint_path, device=DEVICE)
-    yolo = YOLO(yolo_weights_path)
+    if args.dataset == "idd-lite":
+        from src.perception.data_pipeline import load_and_clean_dataset
 
-    extract_all_features(images, labels, segnet, yolo, save_path=csv_path)
+        images, labels = load_and_clean_dataset(DATA_DIR)
+        extract_all_features(images, labels, segnet, yolo, save_path=FEATURES_CSV)
+    else:
+        from src.perception.idd_detection_loader import list_pairs, sample_pairs
+
+        pairs = sample_pairs(list_pairs(IDD117K_95K_DIR, args.split), args.limit or None)
+        print(f"Extracting features from {len(pairs)} IDD117K '{args.split}' frame(s).")
+        extract_features_streaming(
+            pairs,
+            segnet,
+            yolo,
+            save_path=FEATURES_IDD117K_CSV,
+            gt_save_path=FEATURES_IDD117K_GT_CSV,
+        )

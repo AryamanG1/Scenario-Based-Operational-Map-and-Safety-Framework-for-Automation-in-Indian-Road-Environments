@@ -7,13 +7,24 @@ recall, N-point interpolated AP, orientation similarity (AOS/APH), and the
 AUC-based (Waymo-style) AP -- and applies the geometric ones (mAP/AP/
 precision/recall) to benchmark YOLOv8 vehicle detections against IDD-Lite.
 
-IDD-Lite's `_inst_label.png` files were verified to be byte-identical to
-`_label.png` (no real per-instance IDs exist in this "Lite" dataset
-variant). Ground-truth vehicle boxes are therefore derived from the
-semantic mask's Vehicle class (id 3) via connected-component analysis --
-each connected blob approximates one vehicle instance. This under-counts
-touching/overlapping vehicles and is documented here as a real data
-limitation, not a hidden approximation.
+Two ground-truth sources are supported, scored by identical matching code
+(`_score_matches`) so their numbers are directly comparable:
+
+  * `evaluate_vehicle_detections` (IDD-Lite). `_inst_label.png` was verified
+    byte-identical to `_label.png` (no real per-instance IDs exist in this
+    "Lite" variant), so boxes are derived from the semantic mask's Vehicle
+    class (id 3) via connected-component analysis -- each blob approximates
+    one vehicle. This under-counts touching/overlapping vehicles and scores
+    COCO four-wheelers against IDD's whole Vehicle class (which also holds
+    motorcycles, bicycles and autorickshaws), so recall is structurally
+    understated. Documented here as a real data limitation, not a hidden
+    approximation.
+
+  * `evaluate_vehicle_detections_from_json` (IDD117K-Detection). Real
+    human-annotated per-object boxes, so touching vehicles are counted
+    individually and the ground-truth class set is matched exactly to the
+    detector's. This is the preferred benchmark where IDD117K is available;
+    the mask-based one is kept so the two can be reported side by side.
 
 AOS/APH require a per-detection orientation angle, which a 2D
 bounding-box-only pipeline (ours) does not produce. Those two formulas are
@@ -297,6 +308,64 @@ def average_orientation_score(
     return float(np.mean(interpolated))
 
 
+def _score_matches(
+    all_scored: List[Tuple[Box, float, int]],
+    gt_boxes_per_image: List[List[Box]],
+    total_gt: int,
+    iou_threshold: float,
+) -> Dict[str, float]:
+    """Greedily matches scored detections to ground truth and computes metrics.
+
+    Shared by both ground-truth sources (mask-derived pseudo-boxes and
+    IDD117K's real annotated boxes) so that the two are scored by identical
+    code and their numbers are directly comparable.
+
+    Detections are matched highest-confidence-first, each ground-truth box may
+    be claimed at most once, and unmatched detections count as false positives.
+
+    Args:
+        all_scored: (box, confidence, image_idx) triples, any order.
+        gt_boxes_per_image: Ground-truth boxes, indexed by image_idx.
+        total_gt: Total number of ground-truth boxes.
+        iou_threshold: IoU required for a detection to count as a match.
+
+    Returns:
+        A dict with 'ap' (11-point interpolated), 'auc_ap', 'mean_precision',
+        'mean_recall', 'num_ground_truth', and 'num_detections'.
+    """
+    all_scored = sorted(all_scored, key=lambda item: item[1], reverse=True)
+
+    claimed_per_image = [[False] * len(boxes) for boxes in gt_boxes_per_image]
+    tp_flags: List[bool] = []
+    for box, _, image_idx in all_scored:
+        gt_boxes = gt_boxes_per_image[image_idx]
+        claimed = claimed_per_image[image_idx]
+
+        best_iou, best_idx = 0.0, -1
+        for idx, gt_box in enumerate(gt_boxes):
+            if claimed[idx]:
+                continue
+            iou = compute_iou(box, gt_box)
+            if iou > best_iou:
+                best_iou, best_idx = iou, idx
+
+        if best_idx >= 0 and best_iou >= iou_threshold:
+            claimed[best_idx] = True
+            tp_flags.append(True)
+        else:
+            tp_flags.append(False)
+
+    final_precision, final_recall = precision_recall(sum(tp_flags), len(tp_flags), total_gt)
+    return {
+        "ap": interpolated_ap(tp_flags, total_gt, num_recall_points=11),
+        "auc_ap": auc_average_precision(tp_flags, total_gt),
+        "mean_precision": final_precision,
+        "mean_recall": final_recall,
+        "num_ground_truth": total_gt,
+        "num_detections": len(all_scored),
+    }
+
+
 def evaluate_vehicle_detections(
     images: np.ndarray,
     labels: np.ndarray,
@@ -308,6 +377,13 @@ def evaluate_vehicle_detections(
     Ground truth comes from connected-component analysis of the Vehicle
     class in the *ground-truth* semantic mask (not the SegNet prediction),
     since this module measures YOLO's own accuracy independent of SegNet.
+
+    Note this scores COCO four-wheelers (car/bus/truck) against IDD's whole
+    Vehicle class, which also contains motorcycles, bicycles and
+    autorickshaws -- those extra ground-truth boxes can never be matched, so
+    recall is structurally understated. `evaluate_vehicle_detections_from_json`
+    does not have this problem and is the preferred benchmark where
+    IDD117K-Detection is available.
 
     Args:
         images: uint8 array of shape (M, H, W, 3).
@@ -334,52 +410,113 @@ def evaluate_vehicle_detections(
                 continue
             all_scored.append((tuple(det["bbox"]), det["confidence"], i))
 
-    all_scored.sort(key=lambda item: item[1], reverse=True)
+    return _score_matches(all_scored, gt_boxes_per_image, total_gt, iou_threshold)
 
-    claimed_per_image = [[False] * len(boxes) for boxes in gt_boxes_per_image]
-    tp_flags: List[bool] = []
-    for box, _, image_idx in all_scored:
-        gt_boxes = gt_boxes_per_image[image_idx]
-        claimed = claimed_per_image[image_idx]
 
-        best_iou, best_idx = 0.0, -1
-        for idx, gt_box in enumerate(gt_boxes):
-            if claimed[idx]:
+def evaluate_vehicle_detections_from_json(
+    pairs: Sequence[Tuple[str, str]],
+    yolo_model,
+    iou_threshold: float = DEFAULT_IOU_THRESHOLD,
+    gt_groups: Sequence[str] = None,
+    detect_classes: Sequence[str] = None,
+) -> Dict[str, float]:
+    """Benchmarks YOLO detections against IDD117K-Detection's real boxes.
+
+    This is the honest version of `evaluate_vehicle_detections`: ground truth
+    is human-annotated per-object boxes rather than connected components of a
+    semantic mask, so touching vehicles are counted individually instead of
+    merging into one blob, and the ground-truth class set can be matched
+    exactly to the detector's class set.
+
+    Frames are streamed from disk one at a time, so this is safe to run over
+    the full split.
+
+    Args:
+        pairs: (image_path, annotation_path) pairs from
+            `idd_detection_loader.list_pairs` (optionally subsampled via
+            `sample_pairs`).
+        yolo_model: A loaded Ultralytics YOLO model.
+        iou_threshold: IoU required for a detection to count as a match.
+        gt_groups: Annotation groups to treat as ground truth. Defaults to
+            `idd_detection_loader.DEFAULT_GT_GROUPS` (four-wheelers), which
+            mirrors `detect_classes`.
+        detect_classes: YOLO class names to score. Defaults to
+            `feature_extraction.VEHICLES`.
+
+    Returns:
+        A dict with the same keys as `evaluate_vehicle_detections`.
+    """
+    from src.perception.idd_detection_loader import (
+        DEFAULT_GT_GROUPS,
+        filter_boxes_by_group,
+        iter_frames,
+    )
+
+    gt_groups = DEFAULT_GT_GROUPS if gt_groups is None else gt_groups
+    detect_classes = VEHICLES if detect_classes is None else detect_classes
+
+    all_scored: List[Tuple[Box, float, int]] = []
+    gt_boxes_per_image: List[List[Box]] = []
+    total_gt = 0
+
+    for i, (img, boxes) in enumerate(iter_frames(pairs)):
+        gt_boxes = filter_boxes_by_group(boxes, gt_groups)
+        gt_boxes_per_image.append(gt_boxes)
+        total_gt += len(gt_boxes)
+
+        for det in run_detection(img, yolo_model):
+            if det["class"] not in detect_classes or det["confidence"] < CONF_THRESHOLD:
                 continue
-            iou = compute_iou(box, gt_box)
-            if iou > best_iou:
-                best_iou, best_idx = iou, idx
+            all_scored.append((tuple(det["bbox"]), det["confidence"], i))
 
-        if best_idx >= 0 and best_iou >= iou_threshold:
-            claimed[best_idx] = True
-            tp_flags.append(True)
-        else:
-            tp_flags.append(False)
-
-    ap = interpolated_ap(tp_flags, total_gt, num_recall_points=11)
-    auc_ap = auc_average_precision(tp_flags, total_gt)
-    final_precision, final_recall = precision_recall(sum(tp_flags), len(tp_flags), total_gt)
-
-    return {
-        "ap": ap,
-        "auc_ap": auc_ap,
-        "mean_precision": final_precision,
-        "mean_recall": final_recall,
-        "num_ground_truth": total_gt,
-        "num_detections": len(all_scored),
-    }
+    return _score_matches(all_scored, gt_boxes_per_image, total_gt, iou_threshold)
 
 
 if __name__ == "__main__":
+    import argparse
+    import json
+
     from ultralytics import YOLO
 
-    from src.common.paths import DATA_DIR, YOLO_WEIGHTS
-    from src.perception.data_pipeline import load_and_clean_dataset
+    from src.common.paths import (
+        DATA_DIR,
+        DETECTION_BENCHMARK_JSON,
+        IDD117K_95K_DIR,
+        YOLO_WEIGHTS,
+        ensure_output_dirs,
+    )
 
-    images, labels = load_and_clean_dataset(DATA_DIR)
+    parser = argparse.ArgumentParser(description="Benchmark YOLOv8 vehicle detection.")
+    parser.add_argument(
+        "--dataset",
+        choices=("idd-lite", "idd117k"),
+        default="idd117k",
+        help="Ground-truth source: IDD-Lite mask pseudo-boxes, or IDD117K real boxes.",
+    )
+    parser.add_argument("--split", default="val", help="IDD117K split to benchmark on.")
+    parser.add_argument("--limit", type=int, default=2000, help="Frames to evaluate (0 = all).")
+    args = parser.parse_args()
+
+    ensure_output_dirs()
     yolo = YOLO(YOLO_WEIGHTS)
 
-    results = evaluate_vehicle_detections(images[:200], labels[:200], yolo)
-    print("=== YOLOv8 Vehicle Detection Benchmark (Nawaz et al. 2023 metrics) ===")
+    if args.dataset == "idd-lite":
+        from src.perception.data_pipeline import load_and_clean_dataset
+
+        images, labels = load_and_clean_dataset(DATA_DIR)
+        n = args.limit or len(images)
+        results = evaluate_vehicle_detections(images[:n], labels[:n], yolo)
+    else:
+        from src.perception.idd_detection_loader import list_pairs, sample_pairs
+
+        pairs = sample_pairs(list_pairs(IDD117K_95K_DIR, args.split), args.limit or None)
+        print(f"Benchmarking on {len(pairs)} frame(s) from IDD117K '{args.split}'.")
+        results = evaluate_vehicle_detections_from_json(pairs, yolo)
+
+    print(f"=== YOLOv8 Vehicle Detection Benchmark ({args.dataset}) ===")
     for key, value in results.items():
         print(f"{key}: {value}")
+
+    with open(DETECTION_BENCHMARK_JSON, "w") as handle:
+        json.dump({"dataset": args.dataset, "split": args.split, **results}, handle, indent=2)
+    print(f"Wrote -> '{DETECTION_BENCHMARK_JSON}'")

@@ -57,18 +57,33 @@ capstone_project/
 
 The five `src/` subpackages mirror how the pipeline stages actually depend on each other — a clean DAG with no cycles:
 
-```
-perception   (no internal deps — the base layer: images/masks in, features out)
-    ^   ^
-    |   |
-   odd  monitoring   (both depend only on perception)
-    ^    ^
-    |    |
-decision-+    (depends on perception + odd)
-    ^    ^
-    |    |
-pipeline simulation   (pipeline depends on perception+odd+monitoring;
-                        simulation depends on perception+odd+decision+monitoring)
+```plantuml
+@startuml
+title src/ package dependency DAG
+
+skinparam componentStyle rectangle
+skinparam backgroundColor transparent
+
+component "perception\n(no internal deps -- base layer:\nimages/masks in, features out)" as perception
+component "odd\n(depends on perception)" as odd
+component "monitoring\n(depends on perception)" as monitoring
+component "decision\n(depends on perception + odd)" as decision
+component "pipeline\n(depends on perception + odd + monitoring)" as pipeline
+component "simulation\n(depends on perception + odd +\ndecision + monitoring)" as simulation
+
+perception --> odd
+perception --> monitoring
+perception --> decision
+odd --> decision
+perception --> pipeline
+odd --> pipeline
+monitoring --> pipeline
+perception --> simulation
+odd --> simulation
+decision --> simulation
+monitoring --> simulation
+
+@enduml
 ```
 
 `simulation` sits at the top of the DAG alongside `pipeline` — nothing depends on it, so it carries zero cycle risk and Stages 1-7 are completely unaffected by its presence or absence. `src/common/paths.py` is deliberately dependency-free (only uses `os`) so every other module — regardless of position in the DAG — can import path constants without risking a circular import.

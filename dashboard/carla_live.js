@@ -136,8 +136,8 @@ const CARLA_LIVE = {
     {
       "tick": 13,
       "t": 1.3,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
       "rss_distance": 1.5864333182422574,
       "stability_margin": 0.028985535920176844,
       "v_ego": 3.1539249731731585,
@@ -147,361 +147,361 @@ const CARLA_LIVE = {
       "tick": 14,
       "t": 1.4000000000000001,
       "mode": "Takeover",
-      "ads_state": "ODD Exit Warning",
-      "rss_distance": 1.8610234354936686,
-      "stability_margin": 0.09340321675318651,
-      "v_ego": 3.5512287245145004,
-      "progress": 0.016563327117112246
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 1.668999638915495,
+      "stability_margin": 0.02814912612367916,
+      "v_ego": 3.2762287245145005,
+      "progress": 0.016425827117112247
     },
     {
       "tick": 15,
       "t": 1.5,
       "mode": "Takeover",
-      "ads_state": "Request to Intervene",
-      "rss_distance": 1.934808457941468,
-      "stability_margin": 0.025104321579224348,
-      "v_ego": 3.6536672882887755,
-      "progress": 0.018390160761256637
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 1.7490540648629995,
+      "stability_margin": 0.027284776336385208,
+      "v_ego": 3.3924172882887755,
+      "progress": 0.018122035761256636
     },
     {
       "tick": 16,
       "t": 1.6,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 2.006038200330185,
-      "stability_margin": 0.024211424966678052,
-      "v_ego": 3.7509839238743368,
-      "progress": 0.020265652723193806
+      "rss_distance": 1.8265645897435334,
+      "stability_margin": 0.02640276787237006,
+      "v_ego": 3.5027964238743365,
+      "progress": 0.019873433973193806
     },
     {
       "tick": 17,
       "t": 1.7000000000000002,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 2.074729864484102,
-      "stability_margin": 0.023323912677257752,
-      "v_ego": 3.84343472768062,
-      "progress": 0.022187370087034117
+      "rss_distance": 1.9015161736379822,
+      "stability_margin": 0.025511480142181964,
+      "v_ego": 3.6076566026806196,
+      "progress": 0.021677262274534117
     },
     {
       "tick": 18,
       "t": 1.8,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
-      "rss_distance": 2.140910571948706,
-      "stability_margin": 0.022445965531001172,
-      "v_ego": 3.931262991296589,
-      "progress": 0.024153001582682413
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 1.973908396532999,
+      "stability_margin": 0.024617764417984772,
+      "v_ego": 3.7072737725465887,
+      "progress": 0.023530899160807413
     },
     {
       "tick": 19,
       "t": 1.9000000000000001,
       "mode": "Takeover",
-      "ads_state": "ODD Exit Warning",
-      "rss_distance": 7.294201088077427,
-      "stability_margin": 0.09058751891574808,
-      "v_ego": 4.2896998417317596,
-      "progress": 0.026297851503548294
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 6.014776121903294,
+      "stability_margin": 0.02372722872528993,
+      "v_ego": 3.8019100839192594,
+      "progress": 0.025431854202767043
     },
     {
       "tick": 20,
       "t": 2.0,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
-      "rss_distance": 7.475103006429558,
-      "stability_margin": 0.017746620715869812,
-      "v_ego": 4.355214849645171,
-      "progress": 0.02847545892837088
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 6.2416439285706815,
+      "stability_margin": 0.022844459136789202,
+      "v_ego": 3.8918145797232966,
+      "progress": 0.027377761492628695
     },
     {
       "tick": 21,
       "t": 2.1,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
-      "rss_distance": 2.752185222438963,
-      "stability_margin": 0.0886898119241496,
-      "v_ego": 4.692454107162913,
-      "progress": 0.030821685981952337
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.175901879488691,
+      "stability_margin": 0.021973194557737247,
+      "v_ego": 3.977223850737132,
+      "progress": 0.02936637341799726
     },
     {
       "tick": 22,
       "t": 2.2,
       "mode": "Takeover",
-      "ads_state": "ODD Exit Warning",
-      "rss_distance": 3.0296773425450945,
-      "stability_margin": 0.08700819120556375,
-      "v_ego": 5.0128314018047675,
-      "progress": 0.03332810168285472
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.2382767329460904,
+      "stability_margin": 0.021116466815042506,
+      "v_ego": 4.058362658200275,
+      "progress": 0.0313955547470974
     },
     {
       "tick": 23,
       "t": 2.3000000000000003,
       "mode": "Takeover",
-      "ads_state": "Request to Intervene",
-      "rss_distance": 3.055704850292007,
-      "stability_margin": 0.008589474097788513,
-      "v_ego": 5.042189831714529,
-      "progress": 0.03584919659871198
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.2982442738560156,
+      "stability_margin": 0.020276714383533817,
+      "v_ego": 4.135444525290262,
+      "progress": 0.033463277009742526
     },
     {
       "tick": 24,
       "t": 2.4000000000000004,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 3.0805241236013425,
-      "stability_margin": 0.008178931259479189,
-      "v_ego": 5.070080340128802,
-      "progress": 0.038384236768776385
+      "rss_distance": 2.3558555034086144,
+      "stability_margin": 0.01945587574219207,
+      "v_ego": 4.208672299025748,
+      "progress": 0.0355676131592554
     },
     {
       "tick": 25,
       "t": 2.5,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
-      "rss_distance": 3.104186492952378,
-      "stability_margin": 0.007786168506670271,
-      "v_ego": 5.096576323122362,
-      "progress": 0.04093252493033757
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.411165635767157,
+      "stability_margin": 0.0186554667478339,
+      "v_ego": 4.278238684074461,
+      "progress": 0.03770673250129263
     },
     {
       "tick": 26,
       "t": 2.6,
       "mode": "Takeover",
-      "ads_state": "ODD Exit Warning",
-      "rss_distance": 3.3779757985700796,
-      "stability_margin": 0.08479831945363583,
-      "v_ego": 5.3967475069662445,
-      "progress": 0.04363089868382069
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.464233228023698,
+      "stability_margin": 0.017876645292941556,
+      "v_ego": 4.344326749870738,
+      "progress": 0.039878895876228
     },
     {
       "tick": 27,
       "t": 2.7,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
-      "rss_distance": 4.083718314432694,
-      "stability_margin": 0.00298825945342282,
-      "v_ego": 5.406910131617932,
-      "progress": 0.04633435374962966
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 3.0071142425260025,
+      "stability_margin": 0.017120265718563954,
+      "v_ego": 4.407110412377201,
+      "progress": 0.0420824510824166
     },
     {
       "tick": 28,
       "t": 2.8000000000000003,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
-      "rss_distance": 3.6571140139012024,
-      "stability_margin": 0.08296024757803376,
-      "v_ego": 5.691564625037036,
-      "progress": 0.04918013606214818
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.5638872578719147,
+      "stability_margin": 0.01638692487917559,
+      "v_ego": 4.466754891758341,
+      "progress": 0.04431582852829577
     },
     {
       "tick": 29,
       "t": 2.9000000000000004,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
-      "rss_distance": 3.9220706874502027,
-      "stability_margin": 0.08116825964851268,
-      "v_ego": 5.9619863937851845,
-      "progress": 0.052161129259040775
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.6106011342445266,
+      "stability_margin": 0.0156770013360073,
+      "v_ego": 4.523417147170424,
+      "progress": 0.04657753710188098
     },
     {
       "tick": 30,
       "t": 3.0,
       "mode": "Takeover",
-      "ads_state": "ODD Exit Warning",
-      "rss_distance": 4.18168191458296,
-      "stability_margin": 0.07937299533476057,
-      "v_ego": 6.2188870740959254,
-      "progress": 0.05527057279608874
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.6553262634700525,
+      "stability_margin": 0.014990688843082398,
+      "v_ego": 4.577246289811902,
+      "progress": 0.04886616024678693
     },
     {
       "tick": 31,
       "t": 3.1,
       "mode": "Takeover",
-      "ads_state": "Request to Intervene",
-      "rss_distance": 13.405424409945075,
-      "stability_margin": -0.010666574790924116,
-      "v_ego": 6.1879427203911295,
-      "progress": 0.0583645441562843
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 8.252514940945552,
+      "stability_margin": 0.014328025055023605,
+      "v_ego": 4.628383975321307,
+      "progress": 0.051180352234447585
     },
     {
       "tick": 32,
       "t": 3.2,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 13.297048279318597,
-      "stability_margin": -0.010112328738312887,
-      "v_ego": 6.158545584371573,
-      "progress": 0.061443816948470086
+      "rss_distance": 8.394678746217753,
+      "stability_margin": 0.01368891620628386,
+      "v_ego": 4.676964776555241,
+      "progress": 0.053518834622725206
     },
     {
       "tick": 33,
       "t": 3.3000000000000003,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 13.194491183961038,
-      "stability_margin": -0.009588687550382224,
-      "v_ego": 6.130618305152994,
-      "progress": 0.06450912610104659
+      "rss_distance": 8.530827379875195,
+      "stability_margin": 0.013073158372876342,
+      "v_ego": 4.7231165377274795,
+      "progress": 0.05588039289158894
     },
     {
       "tick": 34,
       "t": 3.4000000000000004,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 13.097423149807051,
-      "stability_margin": -0.009093841449193535,
-      "v_ego": 6.104087389895344,
-      "progress": 0.06756116979599425
+      "rss_distance": 8.661155031180348,
+      "stability_margin": 0.012480455819377706,
+      "v_ego": 4.766960710841105,
+      "progress": 0.05826387324700949
     },
     {
       "tick": 35,
       "t": 3.5,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 13.005534506168956,
-      "stability_margin": -0.008626098083491573,
-      "v_ego": 6.078883020400577,
-      "progress": 0.07060061130619454
+      "rss_distance": 8.785856570441103,
+      "stability_margin": 0.011910436848392408,
+      "v_ego": 4.80861267529905,
+      "progress": 0.06066817958465902
     },
     {
       "tick": 36,
       "t": 3.6,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 12.918534499612178,
-      "stability_margin": -0.008183874069706831,
-      "v_ego": 6.054938869380548,
-      "progress": 0.07362808074088481
+      "rss_distance": 8.905126501883894,
+      "stability_margin": 0.011362667501317342,
+      "v_ego": 4.8481820415340975,
+      "progress": 0.06309227060542606
     },
     {
       "tick": 37,
       "t": 3.7,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 12.836150013304952,
-      "stability_margin": -0.007765687203724697,
-      "v_ego": 6.032191925911521,
-      "progress": 0.07664417670384058
+      "rss_distance": 9.019158067657973,
+      "stability_margin": 0.010836663404121871,
+      "v_ego": 4.885772939457393,
+      "progress": 0.06553515707515477
     },
     {
       "tick": 38,
       "t": 3.8000000000000003,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
-      "rss_distance": 3.9705888621151177,
-      "stability_margin": -0.0073701492861942,
-      "v_ego": 6.010582329615945,
-      "progress": 0.07964946786864856
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.9493374001470514,
+      "stability_margin": 0.010331900006986958,
+      "v_ego": 4.921484292484523,
+      "progress": 0.06799589922139702
     },
     {
       "tick": 39,
       "t": 3.9000000000000004,
       "mode": "Takeover",
-      "ads_state": "ODD Exit Warning",
-      "rss_distance": 4.229151316806422,
-      "stability_margin": 0.07904085343940719,
-      "v_ego": 6.265053213135148,
-      "progress": 0.08278199447521613
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 2.9790615506773883,
+      "stability_margin": 0.009847821429807113,
+      "v_ego": 4.955410077860297,
+      "progress": 0.07047360426032717
     },
     {
       "tick": 40,
       "t": 4.0,
       "mode": "Takeover",
-      "ads_state": "Request to Intervene",
-      "rss_distance": 4.194934889752599,
-      "stability_margin": -0.011499257501464827,
-      "v_ego": 6.23180055247839,
-      "progress": 0.08589789475145533
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 3.0074238691787833,
+      "stability_margin": 0.009383848095068925,
+      "v_ego": 4.987639573967282,
+      "progress": 0.07296742404731081
     },
     {
       "tick": 41,
       "t": 4.1000000000000005,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 4.162548773019784,
-      "stability_margin": -0.010898791638037031,
-      "v_ego": 6.20021052485447,
-      "progress": 0.08899800001388257
+      "rss_distance": 3.03448032064167,
+      "stability_margin": 0.0089393833041998,
+      "v_ego": 5.018257595268918,
+      "progress": 0.07547655284494527
     },
     {
       "tick": 42,
       "t": 4.2,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 13.33996200488415,
-      "stability_margin": -0.010331684621976839,
-      "v_ego": 6.170199998611746,
-      "progress": 0.09208310001318845
+      "rss_distance": 9.517328998588539,
+      "stability_margin": 0.008513818892143393,
+      "v_ego": 5.047344715505472,
+      "progress": 0.078000225202698
     },
     {
       "tick": 43,
       "t": 4.3,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 13.235103009183742,
-      "stability_margin": -0.009795946303874398,
-      "v_ego": 6.141689998681159,
-      "progress": 0.09515394501252902
+      "rss_distance": 9.603835592780289,
+      "stability_margin": 0.00810654007689593,
+      "v_ego": 5.074977479730198,
+      "progress": 0.08053771394256311
     },
     {
       "tick": 44,
       "t": 4.4,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 4.075371673267114,
-      "stability_margin": -0.009289717077202386,
-      "v_ego": 6.114605498747101,
-      "progress": 0.09821124776190258
+      "rss_distance": 3.1083496901931382,
+      "stability_margin": 0.007716929605430217,
+      "v_ego": 5.101228605743688,
+      "progress": 0.08308832824543495
     },
     {
       "tick": 45,
       "t": 4.5,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 4.049335987458502,
-      "stability_margin": -0.008811258371156566,
-      "v_ego": 6.088875223809746,
-      "progress": 0.10125568537380746
+      "rss_distance": 3.130709564096067,
+      "stability_margin": 0.007344371284364687,
+      "v_ego": 5.126167175456503,
+      "progress": 0.08565141183316322
     },
     {
       "tick": 46,
       "t": 4.6000000000000005,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 4.024673628399482,
-      "stability_margin": -0.008358943904186567,
-      "v_ego": 6.064431462619258,
-      "progress": 0.1042879011051171
+      "rss_distance": 3.152018651858622,
+      "stability_margin": 0.006988252972525089,
+      "v_ego": 5.149858816683678,
+      "progress": 0.08822634124150504
     },
     {
       "tick": 47,
       "t": 4.7,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 4.845268215348463,
-      "stability_margin": -0.007931251632898678,
-      "v_ego": 6.041209889488296,
-      "progress": 0.10730850604986124
+      "rss_distance": 3.8175589854083407,
+      "stability_margin": 0.006647969102891144,
+      "v_ego": 5.172365875849494,
+      "progress": 0.0908125241794298
     },
     {
       "tick": 48,
       "t": 4.800000000000001,
       "mode": "Takeover",
       "ads_state": "Driver Performing DDT",
-      "rss_distance": 3.979170785808096,
-      "stability_margin": -0.007526756336892648,
-      "v_ego": 6.019149395013881,
-      "progress": 0.11031808074736818
+      "rss_distance": 3.1916667548076227,
+      "stability_margin": 0.006322922793071867,
+      "v_ego": 5.19374758205702,
+      "progress": 0.0934093979704583
     },
     {
       "tick": 49,
       "t": 4.9,
-      "mode": "Degraded",
-      "ads_state": "ADS Engaged",
-      "rss_distance": 12.713491748231037,
-      "stability_margin": -0.00714412278542928,
-      "v_ego": 5.998191925263186,
-      "progress": 0.11331717670999977
+      "mode": "Takeover",
+      "ads_state": "Driver Performing DDT",
+      "rss_distance": 10.04504207178012,
+      "stability_margin": 0.006012527596212541,
+      "v_ego": 5.214060202954169,
+      "progress": 0.09601642807193539
     }
   ]
 };

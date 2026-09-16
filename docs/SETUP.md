@@ -49,6 +49,63 @@ capstone_project/data/idd20k_lite/
 
 `src/perception/data_pipeline.py::extract_dataset()` can also extract a `data/idd-lite.tar.gz` archive into this layout directly, if you have the dataset as a tarball rather than already-extracted.
 
+### Optional: IDD117K-Detection (large bounding-box dataset)
+
+IDD-Lite above is still required — it is the only variant shipping semantic
+masks, so SegNet trains on it either way. IDD117K-Detection is additive: it
+supplies real annotated boxes for the detection benchmark and a much larger
+image corpus for feature extraction. See `docs/DATASET_NOTES.md` for what it
+does and does not contain.
+
+It downloads as **five split chunks of a single `.tar.gz`**, not five separate
+archives — only chunk 1 has the gzip header, so extracting a chunk on its own
+fails. Budget ~68 GB for the download and a similar amount again extracted.
+
+Transfer to the training machine (run it inside `tmux`/`screen` so a dropped
+SSH connection doesn't kill it; re-running the same command resumes):
+
+```bash
+rsync -avP --append-verify *IDD117K_Detection_Part_?of5*.gz user@host:/path/to/data/
+```
+
+Then concatenate and extract in one pipe. This streams straight into `tar`, so
+it never writes a 68 GB intermediate file:
+
+```bash
+cd /path/to/data
+ls *Part_?of5*.gz          # confirm 1,2,3,4,5 order before piping
+cat *Part_?of5*.gz | tar -xzv -C /path/to/project/data/
+```
+
+The glob sorts correctly: the filenames are identical up to `Part_Nof5`, so the
+part digit decides the order. If the transfer looked unreliable, verify the
+whole stream first (needs ~68 GB of scratch space):
+
+```bash
+cat *Part_?of5*.gz > full.tar.gz && gzip -t full.tar.gz && echo OK
+```
+
+The result must land at `data/IDD117K_Detection/`. Before trusting any
+box-derived number, enumerate the real label vocabulary — the codebase does not
+assume its mapping table is correct (see `docs/DATASET_NOTES.md` for why):
+
+```bash
+python -m src.perception.idd_detection_loader --scan
+```
+
+Then:
+
+```bash
+# Detection benchmark against real boxes instead of mask pseudo-boxes
+python -m src.perception.detection_benchmark --dataset idd117k --split val --limit 2000
+
+# Feature extraction over a sampled IDD117K corpus (streams from disk)
+python -m src.perception.feature_extraction --dataset idd117k --split train --limit 15000
+
+# Or run the whole pipeline with the better detection ground truth
+python main.py --detection_gt idd117k --detection_frames 2000
+```
+
 ## First run
 
 ```bash

@@ -31,7 +31,11 @@ from sklearn.metrics import accuracy_score
 from ultralytics import YOLO
 
 from src.perception.data_pipeline import load_and_clean_dataset
-from src.perception.detection_benchmark import evaluate_vehicle_detections
+from src.perception.detection_benchmark import (
+    evaluate_vehicle_detections,
+    evaluate_vehicle_detections_from_json,
+)
+from src.perception.idd_detection_loader import list_pairs, sample_pairs
 from src.decision.ecofusion_gate import (
     compute_stem_features,
     fit_deep_gate,
@@ -63,6 +67,7 @@ from src.common.paths import (
     CARLA_CONFIG_JSON,
     DASHBOARD_CARLA_LIVE_JS,
     DATA_DIR as DATASET_DIR,
+    IDD117K_95K_DIR,
     FEASIBILITY_MAP_CSV,
     FEATURES_CLEANED_CSV as CLEANED_CSV,
     FEATURES_CSV,
@@ -103,6 +108,27 @@ def _parse_args() -> argparse.Namespace:
         "for the primary, more configurable entry point: "
         "`python -m src.simulation.closed_loop_runner --num_ticks 50`.",
     )
+    parser.add_argument(
+        "--segnet_checkpoint",
+        default=SEGNET_CHECKPOINT,
+        help="SegNet weights to use. Point this at models/segnet_idd20k.pth to use the "
+        "IDD-20K-II-trained model (7,034 polygon-derived frames) instead of the "
+        "IDD-Lite one (1,403 frames).",
+    )
+    parser.add_argument(
+        "--detection_gt",
+        choices=("idd-lite", "idd117k"),
+        default="idd-lite",
+        help="Ground-truth source for the Stage 2 detection benchmark. 'idd117k' uses "
+        "IDD117K-Detection's real annotated boxes (requires data/IDD117K_Detection/); "
+        "'idd-lite' uses connected-component pseudo-boxes from the semantic mask.",
+    )
+    parser.add_argument(
+        "--detection_frames",
+        type=int,
+        default=100,
+        help="Frames to run the Stage 2 detection benchmark on.",
+    )
     parser.add_argument("--carla_ticks", type=int, default=50, help="Number of Stage 8 ticks to run (only used with --carla).")
     parser.add_argument("--carla_config", type=str, default=CARLA_CONFIG_JSON, help="Path to a carla_config.json (only used with --carla).")
     return parser.parse_args()
@@ -122,15 +148,15 @@ def main() -> None:
     print("STAGE 2: Perception Layer")
     print("=" * 60)
     final_val_loss = None
-    if os.path.isfile(SEGNET_CHECKPOINT) and not args.force:
-        print(f"Found existing checkpoint '{SEGNET_CHECKPOINT}', loading instead of retraining.")
-        segnet = load_segnet(SEGNET_CHECKPOINT)
+    if os.path.isfile(args.segnet_checkpoint) and not args.force:
+        print(f"Found existing checkpoint '{args.segnet_checkpoint}', loading instead of retraining.")
+        segnet = load_segnet(args.segnet_checkpoint)
     else:
         train_losses, val_losses = train_segnet(
-            images, labels, epochs=30, batch_size=8, save_path=SEGNET_CHECKPOINT
+            images, labels, epochs=30, batch_size=8, save_path=args.segnet_checkpoint
         )
         plot_training_curves(train_losses, val_losses)
-        segnet = load_segnet(SEGNET_CHECKPOINT)
+        segnet = load_segnet(args.segnet_checkpoint)
         final_val_loss = val_losses[-1]
 
     yolo = YOLO(YOLO_WEIGHTS)
@@ -144,8 +170,18 @@ def main() -> None:
     lane_result = detect_lanes(images[0], labels[0])
     print(f"Lane detection sample: {compute_lane_features(lane_result)}")
 
-    detection_bench = evaluate_vehicle_detections(images[:100], labels[:100], yolo)
-    print(f"YOLO vehicle detection benchmark (100 images): {detection_bench}")
+    if args.detection_gt == "idd117k":
+        # IDD117K ships real per-object boxes, so vehicles that touch are
+        # counted individually instead of merging into one mask blob, and the
+        # ground-truth class set matches YOLO's exactly.
+        pairs = sample_pairs(list_pairs(IDD117K_95K_DIR, "val"), args.detection_frames or None)
+        detection_bench = evaluate_vehicle_detections_from_json(pairs, yolo)
+        gt_source = f"IDD117K real boxes, {len(pairs)} images"
+    else:
+        n = args.detection_frames
+        detection_bench = evaluate_vehicle_detections(images[:n], labels[:n], yolo)
+        gt_source = f"IDD-Lite mask pseudo-boxes, {n} images"
+    print(f"YOLO vehicle detection benchmark ({gt_source}): {detection_bench}")
 
     refs = calibrate_references(features_df)
     fused_sample = fuse_dataframe(features_df.head(50), refs)
@@ -240,7 +276,7 @@ def main() -> None:
     print(f"Clean dataset size: {len(images)} images")
     if final_val_loss is not None:
         print(f"SegNet final validation loss: {final_val_loss:.4f}")
-    print(f"YOLO vehicle detection AP (100 images): {detection_bench['ap']:.4f}")
+    print(f"YOLO vehicle detection AP ({gt_source}): {detection_bench['ap']:.4f}")
     print(f"ODD classifier test accuracy: {odd_accuracy:.4f}")
     print(f"P(worst 5% ODD-space scene): {risk_result.failure_probability:.4f}")
     print(f"System SAE level: {sae_level} ({LEVEL_NAMES[sae_level]})")
