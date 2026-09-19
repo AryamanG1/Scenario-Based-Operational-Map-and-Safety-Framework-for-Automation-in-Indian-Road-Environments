@@ -1,3 +1,13 @@
+# === MARKER: COMBINED_DATASETS_PIPELINE_V1 ===
+# If `grep -n "COMBINED_DATASETS_PIPELINE_V1" main.py` finds this line, this
+# checkout includes the combined-dataset update: Stage 1/2 trains SegNet on
+# IDD-20K-II by default (--segnet_dataset idd20k; IDD-Lite is available via
+# --segnet_dataset idd-lite, and a concatenated corpus via --segnet_dataset
+# combined, but neither is the default), Stage 2 feature extraction unions
+# that corpus's features with ALL of IDD117K's train split by default
+# (both IDD_95kDetection + IDD_Detection parts, --idd117k_feature_limit 0),
+# and the Stage 2 detection benchmark defaults to IDD117K's val split, all
+# frames (--detection_gt idd117k --detection_frames 0).
 """Orchestrates the full 7-stage ODD safety-framework pipeline end-to-end.
 
 Stages, matching the capstone proposal's actual architecture (not the
@@ -23,10 +33,13 @@ for why a full-dataset run is too expensive to precompute).
 """
 
 import argparse
+import json
 import os
 
 import joblib
+import numpy as np
 import pandas as pd
+import torch
 from sklearn.metrics import accuracy_score
 from ultralytics import YOLO
 
@@ -35,6 +48,7 @@ from src.perception.detection_benchmark import (
     evaluate_vehicle_detections,
     evaluate_vehicle_detections_from_json,
 )
+from src.perception.idd20k_polygon_pipeline import load_split as load_idd20k_split
 from src.perception.idd_detection_loader import list_pairs, sample_pairs
 from src.decision.ecofusion_gate import (
     compute_stem_features,
@@ -42,12 +56,17 @@ from src.decision.ecofusion_gate import (
     profile_branch_latencies,
     run_ecofusion_gate,
 )
-from src.decision.feasibility_map import build_feasibility_map
-from src.perception.feature_extraction import extract_all_features
+from src.decision.feasibility_map import build_feasibility_map, export_pipeline_stats_js
+from src.perception.feature_extraction import extract_all_features, extract_features_streaming
 from src.odd.fuzzy_odd import classify_dataframe as classify_scenario
 from src.perception.lane_detection import compute_lane_features, detect_lanes
 from src.perception.multi_stream_fusion import calibrate_references, compute_stream_reliabilities, fuse_dataframe
-from src.odd.odd_boundary import DEFAULT_ODD_VARIABLES, classify_odd_region, fit_odd_copula
+from src.odd.odd_boundary import (
+    DEFAULT_ODD_VARIABLES,
+    classify_odd_region,
+    fit_odd_copula,
+    save_odd_copula,
+)
 from src.odd.odd_classifier import (
     combine_stage_outputs,
     load_and_clean_features,
@@ -67,13 +86,24 @@ from src.common.paths import (
     CARLA_CONFIG_JSON,
     DASHBOARD_CARLA_LIVE_JS,
     DATA_DIR as DATASET_DIR,
+    DETECTION_BENCHMARK_JSON,
+    ECOFUSION_DEEP_GATE_PATH,
     IDD117K_95K_DIR,
+    IDD117K_DETECTION_DIR,
+    IDD20K_DIR,
     FEASIBILITY_MAP_CSV,
     FEATURES_CLEANED_CSV as CLEANED_CSV,
+    FEATURES_COMBINED_CSV,
     FEATURES_CSV,
+    FEATURES_IDD117K_CSV,
+    FEATURES_IDD117K_GT_CSV,
     FEATURE_SCALER_PATH as SCALER_PATH,
     ODD_CLASSIFIER_PATH as CLASSIFIER_PATH,
+    ODD_COPULA_PATH,
+    PIPELINE_STATS_JS,
     SEGNET_CHECKPOINT,
+    SEGNET_COMBINED_CHECKPOINT,
+    SEGNET_IDD20K_CHECKPOINT,
     YOLO_WEIGHTS,
     ensure_output_dirs,
 )
@@ -109,39 +139,124 @@ def _parse_args() -> argparse.Namespace:
         "`python -m src.simulation.closed_loop_runner --num_ticks 50`.",
     )
     parser.add_argument(
+        "--segnet_dataset",
+        choices=("idd-lite", "idd20k", "combined"),
+        default="idd20k",
+        help="SegNet training corpus. 'idd20k' (default) trains on IDD-20K-II's 7,034 "
+        "polygon-derived frames. 'idd-lite' uses the older 1,403-frame IDD-Lite set. "
+        "'combined' concatenates both (8,437 frames) -- available but not the default.",
+    )
+    parser.add_argument(
         "--segnet_checkpoint",
-        default=SEGNET_CHECKPOINT,
-        help="SegNet weights to use. Point this at models/segnet_idd20k.pth to use the "
-        "IDD-20K-II-trained model (7,034 polygon-derived frames) instead of the "
-        "IDD-Lite one (1,403 frames).",
+        default=None,
+        help="SegNet weights to use/train. Defaults to the checkpoint matching "
+        "--segnet_dataset (segnet_idd20k.pth / refined_segnet.pth / "
+        "segnet_combined_lite_20k.pth) if not given explicitly.",
+    )
+    parser.add_argument("--segnet_epochs", type=int, default=30, help="SegNet training epochs.")
+    parser.add_argument(
+        "--segnet_batch_size",
+        type=int,
+        default=8,
+        help="SegNet mini-batch size. 8 suits CPU/small GPU; raise substantially "
+        "(e.g. 128) on a large GPU (e.g. an 80GB H100) to keep it busy.",
+    )
+    parser.add_argument(
+        "--segnet_limit",
+        type=int,
+        default=0,
+        help="Cap on IDD-20K-II frames used when --segnet_dataset is 'idd20k' or "
+        "'combined' (0 = all 7,034). Useful for a fast smoke test.",
     )
     parser.add_argument(
         "--detection_gt",
         choices=("idd-lite", "idd117k"),
-        default="idd-lite",
-        help="Ground-truth source for the Stage 2 detection benchmark. 'idd117k' uses "
+        default="idd117k",
+        help="Ground-truth source for the Stage 2 detection benchmark. Defaults to "
         "IDD117K-Detection's real annotated boxes (requires data/IDD117K_Detection/); "
         "'idd-lite' uses connected-component pseudo-boxes from the semantic mask.",
     )
     parser.add_argument(
         "--detection_frames",
         type=int,
-        default=100,
-        help="Frames to run the Stage 2 detection benchmark on.",
+        default=0,
+        help="Frames to run the Stage 2 detection benchmark on (0 = all).",
+    )
+    parser.add_argument(
+        "--idd117k_parts",
+        choices=("95k", "both"),
+        default="both",
+        help="Which IDD117K-Detection part(s) to use for feature extraction and the "
+        "detection benchmark. 'both' unions IDD_95kDetection + IDD_Detection to reach "
+        "the full 96,897 train / 20,202 val totals; '95k' restricts to the "
+        "archive-verified IDD_95kDetection part only.",
+    )
+    parser.add_argument(
+        "--skip_idd117k_features",
+        action="store_true",
+        help="Skip unioning IDD117K images into the Stage 2 feature table (reverts to "
+        "the legacy corpus-only final_features.csv used by Stage 3-7).",
+    )
+    parser.add_argument(
+        "--idd117k_feature_split",
+        default="train",
+        help="IDD117K split to source Stage 2's additional feature-extraction images from.",
+    )
+    parser.add_argument(
+        "--idd117k_feature_limit",
+        type=int,
+        default=None,
+        help="Frames to extract IDD117K features from (0 = all ~96,897 train frames). "
+        "Defaults to 0 if a GPU is detected; must be set explicitly on CPU.",
     )
     parser.add_argument("--carla_ticks", type=int, default=50, help="Number of Stage 8 ticks to run (only used with --carla).")
     parser.add_argument("--carla_config", type=str, default=CARLA_CONFIG_JSON, help="Path to a carla_config.json (only used with --carla).")
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.segnet_checkpoint is None:
+        args.segnet_checkpoint = {
+            "idd-lite": SEGNET_CHECKPOINT,
+            "idd20k": SEGNET_IDD20K_CHECKPOINT,
+            "combined": SEGNET_COMBINED_CHECKPOINT,
+        }[args.segnet_dataset]
+
+    if args.idd117k_feature_limit is None and not args.skip_idd117k_features:
+        if torch.cuda.is_available():
+            args.idd117k_feature_limit = 0
+        else:
+            parser.error(
+                "--idd117k_feature_limit must be set explicitly when no GPU is "
+                "detected (default is 'all ~96,897 images', impractically slow on "
+                "CPU). Pass e.g. --idd117k_feature_limit 2000 for a CPU smoke test, "
+                "or --skip_idd117k_features to skip IDD117K feature extraction entirely."
+            )
+
+    return args
 
 
 def main() -> None:
     """Runs Stages 1-7 of the ODD safety-framework pipeline end-to-end."""
     args = _parse_args()
+    print("MARKER: COMBINED_DATASETS_PIPELINE_V1")
 
     print("=" * 60)
     print("STAGE 1: Input Data")
     print("=" * 60)
-    images, labels = load_and_clean_dataset(DATASET_DIR)
+    if args.segnet_dataset == "idd-lite":
+        images, labels = load_and_clean_dataset(DATASET_DIR)
+    elif args.segnet_dataset == "idd20k":
+        images, labels = load_idd20k_split(IDD20K_DIR, "train", limit=args.segnet_limit or None)
+    else:  # "combined"
+        lite_images, lite_labels = load_and_clean_dataset(DATASET_DIR)
+        idd20k_images, idd20k_labels = load_idd20k_split(
+            IDD20K_DIR, "train", limit=args.segnet_limit or None
+        )
+        images = np.concatenate([lite_images, idd20k_images], axis=0)
+        labels = np.concatenate([lite_labels, idd20k_labels], axis=0)
+        print(
+            f"Combined SegNet corpus: {len(lite_images)} IDD-Lite + "
+            f"{len(idd20k_images)} IDD-20K-II = {len(images)} total frames"
+        )
     print(f"Clean dataset size: {len(images)} images")
 
     print("=" * 60)
@@ -153,7 +268,9 @@ def main() -> None:
         segnet = load_segnet(args.segnet_checkpoint)
     else:
         train_losses, val_losses = train_segnet(
-            images, labels, epochs=30, batch_size=8, save_path=args.segnet_checkpoint
+            images, labels,
+            epochs=args.segnet_epochs, batch_size=args.segnet_batch_size,
+            save_path=args.segnet_checkpoint,
         )
         plot_training_curves(train_losses, val_losses)
         segnet = load_segnet(args.segnet_checkpoint)
@@ -167,6 +284,30 @@ def main() -> None:
     else:
         features_df = extract_all_features(images, labels, segnet, yolo, save_path=FEATURES_CSV)
 
+    if not args.skip_idd117k_features:
+        idd117k_feature_pairs = list_pairs(IDD117K_95K_DIR, args.idd117k_feature_split)
+        if args.idd117k_parts == "both":
+            try:
+                idd117k_feature_pairs += list_pairs(IDD117K_DETECTION_DIR, args.idd117k_feature_split)
+            except FileNotFoundError as exc:
+                print(f"Warning: skipping IDD_Detection part for feature extraction ({exc})")
+        idd117k_feature_pairs = sample_pairs(idd117k_feature_pairs, args.idd117k_feature_limit or None)
+
+        if os.path.isfile(FEATURES_IDD117K_CSV) and not args.force:
+            print(f"Found existing '{FEATURES_IDD117K_CSV}', skipping re-extraction.")
+            features_117k_df = pd.read_csv(FEATURES_IDD117K_CSV)
+        else:
+            print(f"Extracting features from {len(idd117k_feature_pairs)} IDD117K '{args.idd117k_feature_split}' frame(s).")
+            features_117k_df = extract_features_streaming(
+                idd117k_feature_pairs, segnet, yolo,
+                save_path=FEATURES_IDD117K_CSV,
+                gt_save_path=FEATURES_IDD117K_GT_CSV,
+            )
+
+        features_df = pd.concat([features_df, features_117k_df], ignore_index=True)
+        features_df.to_csv(FEATURES_COMBINED_CSV, index=False)
+        print(f"Combined feature corpus (base + IDD117K): {len(features_df)} rows -> '{FEATURES_COMBINED_CSV}'")
+
     lane_result = detect_lanes(images[0], labels[0])
     print(f"Lane detection sample: {compute_lane_features(lane_result)}")
 
@@ -174,14 +315,24 @@ def main() -> None:
         # IDD117K ships real per-object boxes, so vehicles that touch are
         # counted individually instead of merging into one mask blob, and the
         # ground-truth class set matches YOLO's exactly.
-        pairs = sample_pairs(list_pairs(IDD117K_95K_DIR, "val"), args.detection_frames or None)
+        val_pairs = list_pairs(IDD117K_95K_DIR, "val")
+        if args.idd117k_parts == "both":
+            try:
+                val_pairs += list_pairs(IDD117K_DETECTION_DIR, "val")
+            except FileNotFoundError as exc:
+                print(f"Warning: skipping IDD_Detection part for detection benchmark ({exc})")
+        pairs = sample_pairs(val_pairs, args.detection_frames or None)
         detection_bench = evaluate_vehicle_detections_from_json(pairs, yolo)
-        gt_source = f"IDD117K real boxes, {len(pairs)} images"
+        gt_source = f"IDD117K real boxes ({args.idd117k_parts}), {len(pairs)} images"
     else:
-        n = args.detection_frames
+        n = args.detection_frames or len(images)
         detection_bench = evaluate_vehicle_detections(images[:n], labels[:n], yolo)
-        gt_source = f"IDD-Lite mask pseudo-boxes, {n} images"
+        gt_source = f"{args.segnet_dataset} mask pseudo-boxes, {n} images"
     print(f"YOLO vehicle detection benchmark ({gt_source}): {detection_bench}")
+
+    with open(DETECTION_BENCHMARK_JSON, "w") as f:
+        json.dump({"gt_source": gt_source, **detection_bench}, f, indent=2)
+    print(f"Wrote detection benchmark -> '{DETECTION_BENCHMARK_JSON}'")
 
     refs = calibrate_references(features_df)
     fused_sample = fuse_dataframe(features_df.head(50), refs)
@@ -203,6 +354,7 @@ def main() -> None:
     print("STAGE 5: ODD Mapping")
     print("=" * 60)
     copula = fit_odd_copula(features_df, DEFAULT_ODD_VARIABLES)
+    save_odd_copula(copula, ODD_COPULA_PATH)
     regions = features_df[DEFAULT_ODD_VARIABLES].apply(
         lambda row: classify_odd_region(copula, dict(zip(DEFAULT_ODD_VARIABLES, row))), axis=1
     )
@@ -223,7 +375,8 @@ def main() -> None:
     print("=" * 60)
     print("STAGE 7: Decision System")
     print("=" * 60)
-    X, df_cleaned, y, feature_scaler, label_encoder = load_and_clean_features(FEATURES_CSV)
+    stage7_features_csv = FEATURES_COMBINED_CSV if not args.skip_idd117k_features else FEATURES_CSV
+    X, df_cleaned, y, feature_scaler, label_encoder = load_and_clean_features(stage7_features_csv)
     df_cleaned.to_csv(CLEANED_CSV, index=False)
     model, X_test, y_test, y_pred = train_odd_classifier(X, y, model_path=CLASSIFIER_PATH)
     plot_confusion_matrix(y_test, y_pred, label_encoder)
@@ -236,6 +389,7 @@ def main() -> None:
 
     reliabilities = compute_stream_reliabilities(features_df.iloc[0], refs)
     deep_gate = fit_deep_gate(fuse_dataframe(features_df, refs))
+    joblib.dump(deep_gate, ECOFUSION_DEEP_GATE_PATH)
     branch_latencies = profile_branch_latencies(images[0], segnet, yolo)
     stem = compute_stem_features(images[0])
     decision = run_ecofusion_gate(stem, deep_gate, branch_latencies, lambda_e=0.1)
@@ -244,6 +398,8 @@ def main() -> None:
     print("Building Scenario-Based Feasibility Map...")
     feasibility_df = build_feasibility_map(features_df, feature_scaler)
     feasibility_df.to_csv(FEASIBILITY_MAP_CSV, index=False)
+    export_pipeline_stats_js(feasibility_df, PIPELINE_STATS_JS)
+    print(f"Wrote dashboard pipeline stats -> '{PIPELINE_STATS_JS}'")
     print(feasibility_df["final_mode"].value_counts())
 
     if args.carla:
@@ -274,6 +430,7 @@ def main() -> None:
     print("FINAL SUMMARY")
     print("=" * 60)
     print(f"Clean dataset size: {len(images)} images")
+    print(f"Total Stage 3-7 feature rows (combined corpus): {len(features_df)}")
     if final_val_loss is not None:
         print(f"SegNet final validation loss: {final_val_loss:.4f}")
     print(f"YOLO vehicle detection AP ({gt_source}): {detection_bench['ap']:.4f}")
