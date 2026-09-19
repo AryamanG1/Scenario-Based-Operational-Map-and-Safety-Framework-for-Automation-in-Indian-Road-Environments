@@ -3,7 +3,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-data/idd20k_lite/
-data/*.tar.gz
+data/
 models/
 outputs/
