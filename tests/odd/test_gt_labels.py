@@ -124,3 +124,35 @@ def test_misaligned_sidecar_is_rejected(tmp_path):
     gt.iloc[:-1].to_csv(g_path, index=False)
     with pytest.raises(ValueError, match="aligned"):
         load_and_clean_features(f_path, gt_csv_path=g_path)
+
+
+def test_calibrated_mode_thresholds_roundtrip_and_produce_all_modes(tmp_path):
+    from src.odd.odd_classifier import (
+        DEFAULT_MODE_THRESHOLDS,
+        ModeThresholds,
+        assign_mode,
+        calibrate_mode_thresholds,
+        load_mode_thresholds,
+    )
+
+    f_path, _, _ = _make_tables(tmp_path, n_unannotated=0, n_annotated=2000, seed=3)
+    X, _, _, scaler, _ = load_and_clean_features(f_path)
+    scaled = scaler.transform(pd.read_csv(f_path))
+
+    thr = calibrate_mode_thresholds(scaled)
+    assert thr.source.startswith("percentiles")
+    assert thr.visibility_degraded <= thr.visibility_normal
+    assert thr.det_conf_degraded <= thr.det_conf_normal
+
+    path = os.path.join(tmp_path, "thr.json")
+    thr.save(path)
+    assert ModeThresholds.load(path) == thr
+    assert load_mode_thresholds(path) == thr
+    assert load_mode_thresholds(os.path.join(tmp_path, "missing.json")) == DEFAULT_MODE_THRESHOLDS
+
+    modes = scaled.apply(lambda r: assign_mode(r, thr), axis=1).value_counts()
+    assert set(modes.index) == {"Normal", "Degraded", "Takeover"}
+    # Calibrated cut-offs must not collapse the corpus into a single mode.
+    assert modes.max() < 0.9 * modes.sum()
+    # And the default-argument path is unchanged.
+    assert assign_mode(scaled.iloc[0]) == assign_mode(scaled.iloc[0], DEFAULT_MODE_THRESHOLDS)

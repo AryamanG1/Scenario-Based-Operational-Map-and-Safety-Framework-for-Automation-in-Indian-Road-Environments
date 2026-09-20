@@ -37,6 +37,7 @@ import pandas as pd
 import torch
 
 from src.common.paths import (
+    ODD_MODE_THRESHOLDS_JSON,
     CARLA_CONFIG_JSON,
     DASHBOARD_CARLA_LIVE_JS,
     DATA_DIR,
@@ -49,7 +50,7 @@ from src.common.paths import (
 from src.decision.sae_taxonomy import ADSStateMachine
 from src.odd.fuzzy_odd import PDBreakpoints, calibrate_pd_breakpoints, classify_mu_odd, defuzzify_mu_odd
 from src.odd.odd_boundary import DEFAULT_ODD_VARIABLES, ODDCopulaModel, classify_odd_region, fit_odd_copula
-from src.odd.odd_classifier import FeatureScaler, assign_mode, combine_stage_outputs
+from src.odd.odd_classifier import FeatureScaler, assign_mode, combine_stage_outputs, load_mode_thresholds
 from src.odd.rss_safety import (
     SideslipState,
     compute_stability_boundary,
@@ -177,6 +178,9 @@ def run_closed_loop_simulation(
     records = []
     final_mode = "Normal"
 
+    mode_thresholds = load_mode_thresholds(ODD_MODE_THRESHOLDS_JSON)
+
+
     for _ in range(num_ticks):
         try:
             tick = tick_source.tick()
@@ -199,7 +203,7 @@ def run_closed_loop_simulation(
         features = compute_features(tick.frame, mask, detections)
 
         scaled_row = feature_scaler.transform(pd.DataFrame([features])).iloc[0]
-        base_mode = assign_mode(scaled_row)
+        base_mode = assign_mode(scaled_row, mode_thresholds)
 
         odd_row = {v: features[v] for v in DEFAULT_ODD_VARIABLES}
         odd_region = classify_odd_region(copula_model, odd_row)

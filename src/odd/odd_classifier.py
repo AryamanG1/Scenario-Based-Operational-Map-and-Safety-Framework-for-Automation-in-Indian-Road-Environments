@@ -45,7 +45,103 @@ if DEVICE.type == "cpu":
 # --------------------------------------------------------------------------
 
 
-def assign_mode(row: pd.Series) -> str:
+@dataclass(frozen=True)
+class ModeThresholds:
+    """The cut-offs assign_mode() compares MinMax-scaled features against.
+
+    The legacy values (DEFAULT_MODE_THRESHOLDS) were hand-picked on 1,402
+    IDD-Lite frames. Applied to a 104k-frame corpus whose MinMax range is
+    set by a handful of extreme frames, nothing clears the "Normal" bar
+    (0 Normal / 92% Takeover). calibrate_mode_thresholds() re-derives each
+    cut-off as a percentile of the corpus it is actually applied to, so the
+    rule's *structure* (what must be good for Normal, what is tolerable for
+    Degraded) is unchanged but its numbers match the data.
+    """
+
+    det_conf_normal: float = 0.85     # detection_confidence must exceed this for Normal
+    det_conf_degraded: float = 0.5    # ... and this for Degraded
+    visibility_normal: float = 0.45   # visibility (sharpness) must exceed this for Normal
+    visibility_degraded: float = 0.25 # ... and this for Degraded
+    traffic_density_normal: float = 0.4     # traffic_density must be below this for Normal
+    non_drivable_normal: float = 0.2        # non_drivable_area_score must be below this for Normal
+    living_things_normal: float = 0.2       # living_things_score must be below this for Normal
+    source: str = "legacy-constants"
+
+    def save(self, path: str) -> None:
+        with open(path, "w") as handle:
+            json.dump(asdict(self), handle, indent=2)
+
+    @classmethod
+    def load(cls, path: str) -> "ModeThresholds":
+        with open(path) as handle:
+            return cls(**json.load(handle))
+
+
+ModeThresholds.__module__ = "src.odd.odd_classifier"
+DEFAULT_MODE_THRESHOLDS = ModeThresholds()
+
+# Percentile each cut-off is derived from in calibrate_mode_thresholds().
+# These encode the same intent as the legacy constants ("Normal needs the
+# good side of every axis; Degraded tolerates the middle") as ranks in the
+# corpus rather than fixed positions on a data-dependent MinMax scale:
+#   visibility: Normal must be sharper than the bottom 30%; Degraded than the bottom 10%.
+#   detection_confidence (frames with detections): Normal above the bottom 40%; Degraded above the bottom 10%.
+#   traffic_density: Normal below the 60th percentile.
+#   non_drivable_area_score / living_things_score: Normal below the top 20%.
+# Normal is a CONJUNCTION of five conditions, so its share is roughly the
+# product of these pass rates (~10-15% of frames), not any single percentile.
+# These are the documented operationalization knobs; on IDD-Lite they give
+# ~11% Normal / 71% Degraded / 18% Takeover versus 1% / 31% / 68% for the
+# legacy constants.
+MODE_CALIBRATION_PERCENTILES = {
+    "det_conf_normal": 40.0,
+    "det_conf_degraded": 10.0,
+    "visibility_normal": 30.0,
+    "visibility_degraded": 10.0,
+    "traffic_density_normal": 60.0,
+    "non_drivable_normal": 80.0,
+    "living_things_normal": 80.0,
+}
+
+
+def calibrate_mode_thresholds(
+    df_scaled: pd.DataFrame, percentiles: Optional[dict] = None
+) -> ModeThresholds:
+    """Derives assign_mode() cut-offs as percentiles of a scaled feature table.
+
+    Args:
+        df_scaled: MinMax-scaled features for the corpus the rule will be
+            applied to (FeatureScaler.transform() output).
+        percentiles: Override of MODE_CALIBRATION_PERCENTILES.
+
+    Returns:
+        A ModeThresholds with source="percentiles".
+    """
+    pct = {**MODE_CALIBRATION_PERCENTILES, **(percentiles or {})}
+    with_dets = df_scaled["detection_confidence"][df_scaled.get("object_presence", 1) > 0]
+    if with_dets.empty:
+        with_dets = df_scaled["detection_confidence"]
+    return ModeThresholds(
+        det_conf_normal=float(np.percentile(with_dets, pct["det_conf_normal"])),
+        det_conf_degraded=float(np.percentile(with_dets, pct["det_conf_degraded"])),
+        visibility_normal=float(np.percentile(df_scaled["visibility"], pct["visibility_normal"])),
+        visibility_degraded=float(np.percentile(df_scaled["visibility"], pct["visibility_degraded"])),
+        traffic_density_normal=float(np.percentile(df_scaled["traffic_density"], pct["traffic_density_normal"])),
+        non_drivable_normal=float(np.percentile(df_scaled["non_drivable_area_score"], pct["non_drivable_normal"])),
+        living_things_normal=float(np.percentile(df_scaled["living_things_score"], pct["living_things_normal"])),
+        source=f"percentiles of {len(df_scaled)} scaled rows: {pct}",
+    )
+
+
+def load_mode_thresholds(path: str) -> ModeThresholds:
+    """Loads persisted thresholds, or the legacy defaults (with a note) if absent."""
+    if os.path.isfile(path):
+        return ModeThresholds.load(path)
+    print(f"Note: no calibrated mode thresholds at '{path}'; using legacy constants.")
+    return DEFAULT_MODE_THRESHOLDS
+
+
+def assign_mode(row: pd.Series, thresholds: ModeThresholds = DEFAULT_MODE_THRESHOLDS) -> str:
     """Assigns an ODD mode label to one MinMax-scaled feature row.
 
     SAE J3016 mapping (this capstone targets SAE Level 2 -- see
@@ -64,27 +160,31 @@ def assign_mode(row: pd.Series) -> str:
         row: A row of MinMax-scaled (0-1) features, including at least
             'object_presence', 'detection_confidence', 'visibility',
             'traffic_density', 'non_drivable_area_score', 'living_things_score'.
+        thresholds: The cut-offs to compare against. Defaults to the legacy
+            constants; main.py passes corpus-calibrated ones (see
+            calibrate_mode_thresholds).
 
     Returns:
         One of "Normal", "Degraded", "Takeover".
     """
+    t = thresholds
     has_detections = row.get("object_presence", 0) > 0
-    det_conf_ok = (row["detection_confidence"] > 0.85) if has_detections else True
+    det_conf_ok = (row["detection_confidence"] > t.det_conf_normal) if has_detections else True
 
     # NORMAL: full ADS operation within ODD (SAE L2, driver supervising)
     if (
         det_conf_ok
-        and row["visibility"] > 0.45
-        and row["traffic_density"] < 0.4
-        and row["non_drivable_area_score"] < 0.2
-        and row["living_things_score"] < 0.2
+        and row["visibility"] > t.visibility_normal
+        and row["traffic_density"] < t.traffic_density_normal
+        and row["non_drivable_area_score"] < t.non_drivable_normal
+        and row["living_things_score"] < t.living_things_normal
     ):
         return "Normal"
 
     # DEGRADED: cautious/supervised operation, closer driver attention needed
     elif (
-        ((row["detection_confidence"] > 0.5) if has_detections else True)
-        and row["visibility"] > 0.25
+        ((row["detection_confidence"] > t.det_conf_degraded) if has_detections else True)
+        and row["visibility"] > t.visibility_degraded
     ):
         return "Degraded"
 

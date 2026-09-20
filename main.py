@@ -83,6 +83,8 @@ from src.odd.odd_classifier import (
     GT_COUNT_COLUMNS,
     LABEL_SOURCE_GT,
     LABEL_SOURCE_RULE,
+    DEFAULT_MODE_THRESHOLDS,
+    calibrate_mode_thresholds,
     combine_stage_outputs,
     evaluate_on_holdout,
     fit_gt_label_thresholds,
@@ -124,6 +126,7 @@ from src.common.paths import (
     ODD_CLASSIFIER_HOLDOUT_EVAL_JSON,
     ODD_CLASSIFIER_PATH as CLASSIFIER_PATH,
     ODD_GT_LABEL_THRESHOLDS_JSON,
+    ODD_MODE_THRESHOLDS_JSON,
     ODD_COPULA_PATH,
     PIPELINE_STATS_JS,
     SEGNET_CHECKPOINT,
@@ -260,6 +263,17 @@ def _parse_args() -> argparse.Namespace:
         "annotations (IDD-20K-II) are excluded from classifier training only. 'rule' "
         "is the legacy behaviour: assign_mode() applied to the classifier's own inputs, "
         "which any model fits at ~100%% -- kept for comparison, not for reporting.",
+    )
+    parser.add_argument(
+        "--mode_thresholds",
+        choices=("calibrated", "legacy"),
+        default="calibrated",
+        help="Cut-offs for the Stage 7 assign_mode() rule behind the feasibility map. "
+        "'calibrated' (default) derives each cut-off as a percentile of this run's "
+        "scaled feature corpus (saved to models/odd_mode_thresholds.json and reused by "
+        "the closed-loop runner and full_dataset_pipeline); 'legacy' keeps the constants "
+        "hand-picked on 1,402 IDD-Lite frames, which on a 104k-frame corpus label ~0%% of "
+        "scenes Normal.",
     )
     parser.add_argument(
         "--skip_holdout_eval",
@@ -549,8 +563,25 @@ def main() -> None:
     decision = run_ecofusion_gate(stem, deep_gate, branch_latencies, lambda_e=0.1)
     print(f"EcoFusion sample decision (lambda_E=0.1): selected={sorted(decision.selected_config)}")
 
+    if args.mode_thresholds == "calibrated":
+        mode_thresholds = calibrate_mode_thresholds(feature_scaler.transform(features_df))
+        mode_thresholds.save(ODD_MODE_THRESHOLDS_JSON)
+        print(
+            "Calibrated assign_mode() cut-offs (percentiles of the scaled corpus): "
+            f"det_conf > {mode_thresholds.det_conf_normal:.3f}/{mode_thresholds.det_conf_degraded:.3f}, "
+            f"visibility > {mode_thresholds.visibility_normal:.3f}/{mode_thresholds.visibility_degraded:.3f}, "
+            f"traffic_density < {mode_thresholds.traffic_density_normal:.3f}, "
+            f"non_drivable < {mode_thresholds.non_drivable_normal:.3f}, "
+            f"living_things < {mode_thresholds.living_things_normal:.3f} -> '{ODD_MODE_THRESHOLDS_JSON}'"
+        )
+    else:
+        mode_thresholds = DEFAULT_MODE_THRESHOLDS
+        if os.path.isfile(ODD_MODE_THRESHOLDS_JSON):
+            os.remove(ODD_MODE_THRESHOLDS_JSON)  # so other entry points also use legacy
+        print("Using legacy assign_mode() constants.")
+
     print("Building Scenario-Based Feasibility Map...")
-    feasibility_df = build_feasibility_map(features_df, feature_scaler, copula=copula)
+    feasibility_df = build_feasibility_map(features_df, feature_scaler, copula=copula, mode_thresholds=mode_thresholds)
     feasibility_df.to_csv(FEASIBILITY_MAP_CSV, index=False)
     export_pipeline_stats_js(feasibility_df, PIPELINE_STATS_JS)
     print(f"Wrote dashboard pipeline stats -> '{PIPELINE_STATS_JS}'")

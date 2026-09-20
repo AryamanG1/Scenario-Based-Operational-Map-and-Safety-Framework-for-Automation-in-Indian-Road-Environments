@@ -21,9 +21,10 @@ from ultralytics import YOLO
 
 from src.perception.data_pipeline import IMAGE_SIZE, VOID_LABEL
 from src.perception.feature_extraction import compute_features, load_yolo, run_detection
-from src.odd.odd_classifier import FeatureScaler, assign_mode  # noqa: F401 (FeatureScaler needed for joblib.load)
+from src.odd.odd_classifier import FeatureScaler, assign_mode, load_mode_thresholds  # noqa: F401 (FeatureScaler needed for joblib.load)
 from src.monitoring.perturbation_engine import calculate_metrics
 from src.perception.segnet_model import load_segnet
+from src.common.paths import ODD_MODE_THRESHOLDS_JSON
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if DEVICE.type == "cpu":
@@ -108,6 +109,7 @@ def run_full_dataset_pipeline(
     segnet = load_segnet(segnet_checkpoint, device=DEVICE)
     yolo = load_yolo(yolo_weights)
     feature_scaler: FeatureScaler = joblib.load(feature_scaler_path)
+    mode_thresholds = load_mode_thresholds(ODD_MODE_THRESHOLDS_JSON)
 
     buffer_rows: List[dict] = []
 
@@ -154,7 +156,7 @@ def run_full_dataset_pipeline(
             features = compute_features(img, mask, detections)
 
             scaled_row = feature_scaler.transform(pd.DataFrame([features])).iloc[0]
-            mode = assign_mode(scaled_row)
+            mode = assign_mode(scaled_row, mode_thresholds)
 
             miou = np.nan
             if lbl_path is not None:

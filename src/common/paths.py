@@ -53,6 +53,8 @@ ODD_CLASSIFIER_PATH = os.path.join(MODELS_DIR, "odd_classifier.pkl")
 # Thresholds that turn annotation-derived scene complexity into the
 # Normal/Degraded/Takeover label (see odd_classifier.fit_gt_label_thresholds).
 ODD_GT_LABEL_THRESHOLDS_JSON = os.path.join(MODELS_DIR, "odd_gt_label_thresholds.json")
+# Corpus-calibrated cut-offs for the assign_mode() rule (odd_classifier.calibrate_mode_thresholds).
+ODD_MODE_THRESHOLDS_JSON = os.path.join(MODELS_DIR, "odd_mode_thresholds.json")
 FEATURE_SCALER_PATH = os.path.join(MODELS_DIR, "feature_scaler.pkl")
 ODD_COPULA_PATH = os.path.join(MODELS_DIR, "odd_copula.pkl")
 ECOFUSION_DEEP_GATE_PATH = os.path.join(MODELS_DIR, "ecofusion_deep_gate.pkl")

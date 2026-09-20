@@ -42,7 +42,7 @@ import pandas as pd
 from src.odd.fuzzy_odd import classify_dataframe as classify_scenario
 from src.odd.copula_gpu import classify_odd_region_batch
 from src.odd.odd_boundary import DEFAULT_ODD_VARIABLES, ODDCopulaModel, classify_odd_region, fit_odd_copula, odd_density
-from src.odd.odd_classifier import FeatureScaler, assign_mode, combine_stage_outputs
+from src.odd.odd_classifier import DEFAULT_MODE_THRESHOLDS, FeatureScaler, ModeThresholds, assign_mode, combine_stage_outputs
 from src.odd.traffic_density import classify_dataframe as classify_traffic
 
 
@@ -118,6 +118,7 @@ def build_feasibility_map(
     odd_variables=DEFAULT_ODD_VARIABLES,
     default_monitoring_state: str = "Nominal",
     copula: Optional[ODDCopulaModel] = None,
+    mode_thresholds: ModeThresholds = DEFAULT_MODE_THRESHOLDS,
 ) -> pd.DataFrame:
     """Builds the full Scenario-Based Feasibility Map for a features dataset.
 
@@ -135,6 +136,8 @@ def build_feasibility_map(
             same model in Stage 5, so passing it in avoids refitting -- on
             the ~104k-row combined corpus the fit is the single most
             expensive step of this function.
+        mode_thresholds: Cut-offs for the assign_mode() rule. main.py passes
+            corpus-calibrated percentiles; the default is the legacy constants.
 
     Returns:
         A copy of features_df with one FeasibilityRecord's fields appended
@@ -159,7 +162,7 @@ def build_feasibility_map(
     records = []
     for i in range(len(features_df)):
         scaled_row = scaled_rows[i]
-        base_mode = assign_mode(scaled_row)
+        base_mode = assign_mode(scaled_row, mode_thresholds)
         odd_region = odd_regions[i]
 
         final_mode = combine_stage_outputs(base_mode, odd_region, default_monitoring_state)
