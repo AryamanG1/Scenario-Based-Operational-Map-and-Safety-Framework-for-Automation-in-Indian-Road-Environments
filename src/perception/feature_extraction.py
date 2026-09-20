@@ -771,7 +771,8 @@ def extract_features_streaming(
     feasibility map) consumes this CSV unchanged.
 
     Ground-truth object counts derived from the annotations are written to a
-    **separate** sidecar CSV, never into `save_path`:
+    **separate** sidecar CSV, never into `save_path` (NaN for frames that
+    have no annotation file, so "unknown" is never confused with "empty"):
     `odd_classifier.load_and_clean_features` treats every column of the
     feature CSV as a model input, so annotation-derived columns there would
     leak ground truth into the classifier. The sidecar shares the feature
@@ -841,8 +842,14 @@ def extract_features_streaming(
 
         if gt_save_path:
             for boxes in boxes_per_image:
-                groups = [group_of(box["name"]) for box in boxes]
-                gt_row = {name: groups.count(group) for name, group in gt_groups.items()}
+                if boxes is None:
+                    # No annotation file for this frame: the counts are UNKNOWN,
+                    # not zero. NaN keeps the row out of the classifier's label
+                    # set instead of teaching it that the road was empty.
+                    gt_row = {name: float("nan") for name in gt_groups}
+                else:
+                    groups = [group_of(box["name"]) for box in boxes]
+                    gt_row = {name: groups.count(group) for name, group in gt_groups.items()}
                 gt_rows.append(gt_row)
                 all_gt_rows.append(gt_row)
 

@@ -361,6 +361,7 @@ def fig_detection_overlays(out_dir, num_frames, dpi, seed):
     rows = (n + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(6.4 * cols, 2.4 * rows), squeeze=False)
     for k, (img, gts, dets) in enumerate(zip(images, boxes_per_image, dets_per_image)):
+        gts = gts or []  # None = frame has no annotation file
         canvas = img.copy()
         dets = [d for d in dets if d["confidence"] >= CONF_THRESHOLD]
         matched = set()

@@ -132,20 +132,31 @@ def _detect_layout(split_dir: str) -> Tuple[str, str, str]:
     Raises:
         FileNotFoundError: If no recognized image directory is present.
     """
-    image_dir = ""
-    for candidate in ("leftImg8bit", "JPEGImages"):
-        if os.path.isdir(os.path.join(split_dir, candidate)):
-            image_dir = os.path.join(split_dir, candidate)
-            break
+    # The IDD117K archives are not consistent about directory names: the 95k
+    # part ships 'Labels_json/' for val but 'labelsJSON/' for train. Match on
+    # a normalized form (lower-case, no '_'/'-') so both resolve.
+    def _find(candidates):
+        wanted = {c.lower().replace("_", "").replace("-", "") for c in candidates}
+        if not os.path.isdir(split_dir):
+            return ""
+        for entry in sorted(os.listdir(split_dir)):
+            path = os.path.join(split_dir, entry)
+            if os.path.isdir(path) and entry.lower().replace("_", "").replace("-", "") in wanted:
+                return path
+        return ""
+
+    image_dir = _find(("leftImg8bit", "JPEGImages"))
     if not image_dir:
         raise FileNotFoundError(
             f"No 'leftImg8bit/' or 'JPEGImages/' directory under '{split_dir}'."
         )
 
-    if os.path.isdir(os.path.join(split_dir, "Labels_json")):
-        return image_dir, os.path.join(split_dir, "Labels_json"), ".json"
-    if os.path.isdir(os.path.join(split_dir, "Annotations")):
-        return image_dir, os.path.join(split_dir, "Annotations"), ".xml"
+    json_dir = _find(("Labels_json", "labelsJSON", "labels"))
+    if json_dir:
+        return image_dir, json_dir, ".json"
+    xml_dir = _find(("Annotations",))
+    if xml_dir:
+        return image_dir, xml_dir, ".xml"
     return image_dir, "", ""
 
 
@@ -241,6 +252,14 @@ def list_pairs(part_dir: str, split: str = "train") -> List[Tuple[str, str]]:
 
     image_paths = sorted(glob.glob(os.path.join(image_dir, "*", "*.jpg")))
     if not ann_dir:
+        if split != "test":
+            print(
+                f"!! WARNING: no 'Labels_json/' or 'Annotations/' directory under '{split_dir}'. "
+                f"All {len(image_paths)} '{split}' frames will be treated as UNLABELED: they "
+                "contribute no ground-truth boxes to the detection benchmark and no labels to "
+                "the ODD classifier. If this split is supposed to be annotated, the label "
+                "archive was not extracted here."
+            )
         return [(path, "") for path in image_paths]
 
     pairs: List[Tuple[str, str]] = []
@@ -487,7 +506,10 @@ class FramePairDataset:
         img, boxes = load_image_and_boxes(img_path, ann_path, self.size)
         # Unreadable frames are dropped by the collate step, not here: a
         # Dataset must return something for every index it is asked for.
-        return img, boxes
+        # A frame with NO annotation file yields boxes=None (unknown), which
+        # is different from [] (annotated, genuinely empty) -- consumers that
+        # build ground-truth counts must not treat the two alike.
+        return img, (boxes if ann_path else None)
 
 
 def _collate_frames(batch):
@@ -503,6 +525,7 @@ def _collate_frames(batch):
     Returns:
         A tuple (images, boxes_per_image) of equal length, with None images
         (and their boxes) removed -- matching `iter_frames`, which skips them.
+        `boxes_per_image[i]` is None for a frame that had no annotation file.
     """
     images, boxes = [], []
     for img, box_list in batch:
@@ -551,16 +574,20 @@ def iter_frame_batches(
     Yields:
         (images, boxes_per_image) tuples. `images` is a list of BGR uint8
         arrays of shape (size[1], size[0], 3); `boxes_per_image[i]` holds the
-        box dicts for `images[i]`. Unreadable frames are skipped, so a batch
-        may be shorter than `batch_size` (and may be empty).
+        box dicts for `images[i]`, or None if that frame has no annotation
+        file. Unreadable frames are skipped, so a batch may be shorter than
+        `batch_size` (and may be empty).
     """
     pairs = list(pairs)
 
     if num_workers <= 0:
         batch_imgs, batch_boxes = [], []
-        for img, boxes in iter_frames(pairs, size):
+        for (img_path, ann_path) in pairs:
+            img, boxes = load_image_and_boxes(img_path, ann_path, size)
+            if img is None:
+                continue
             batch_imgs.append(img)
-            batch_boxes.append(boxes)
+            batch_boxes.append(boxes if ann_path else None)
             if len(batch_imgs) >= batch_size:
                 yield batch_imgs, batch_boxes
                 batch_imgs, batch_boxes = [], []

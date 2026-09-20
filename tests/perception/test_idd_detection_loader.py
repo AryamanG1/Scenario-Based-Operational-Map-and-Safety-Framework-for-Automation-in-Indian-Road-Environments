@@ -142,3 +142,28 @@ def test_voc_layout_is_autodetected_for_the_older_part(idd_fixture):
     pairs = list_pairs(str(idd_fixture / "IDD_Detection"), "val")
     assert len(pairs) == 1
     assert load_boxes(pairs[0][1])[0]["bbox"] == (10, 20, 100, 120)
+
+
+def test_iter_frame_batches_marks_unlabeled_frames_as_none(tmp_path):
+    """A frame with no annotation file yields boxes=None, not [] -- the GT
+    sidecar must record 'unknown', never 'zero road users'."""
+    import json
+
+    import cv2
+    import numpy as np
+
+    from src.perception.idd_detection_loader import iter_frame_batches
+
+    img = np.zeros((48, 64, 3), np.uint8)
+    labeled_img = str(tmp_path / "a.jpg"); cv2.imwrite(labeled_img, img)
+    labeled_ann = str(tmp_path / "a.json")
+    json.dump([{"name": "car", "bbox": {"xmin": 1, "ymin": 1, "xmax": 10, "ymax": 10}}], open(labeled_ann, "w"))
+    empty_ann = str(tmp_path / "b.json"); json.dump([], open(empty_ann, "w"))
+    unlabeled_img = str(tmp_path / "c.jpg"); cv2.imwrite(unlabeled_img, img)
+
+    pairs = [(labeled_img, labeled_ann), (labeled_img, empty_ann), (unlabeled_img, "")]
+    for nw in (0, 2):
+        _, boxes = next(iter_frame_batches(pairs, batch_size=8, num_workers=nw))
+        assert len(boxes[0]) == 1
+        assert boxes[1] == []
+        assert boxes[2] is None
