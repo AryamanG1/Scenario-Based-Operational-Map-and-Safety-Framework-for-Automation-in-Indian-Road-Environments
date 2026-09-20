@@ -383,6 +383,136 @@ def iter_frames(
         yield img, boxes
 
 
+class FramePairDataset:
+    """A `torch.utils.data.Dataset` over (image_path, annotation_path) pairs.
+
+    Exists so frame decoding can be pushed onto DataLoader worker processes.
+    `iter_frames` above decodes one 1920x1080 JPEG at a time, inline on the
+    caller's thread, which means every downstream GPU forward pass waits on a
+    synchronous `cv2.imread`. That is the single biggest throughput limit on a
+    GPU box: at ~104k frames the decode, not the model, sets the wall clock.
+
+    The per-item body is `load_image_and_boxes()` verbatim, so frames and box
+    coordinates are byte-identical to the serial path -- only *where* the work
+    happens changes.
+
+    Args:
+        pairs: (image_path, annotation_path) pairs.
+        size: Target (width, height).
+    """
+
+    def __init__(
+        self, pairs: Sequence[Tuple[str, str]], size: Tuple[int, int] = IMAGE_SIZE
+    ) -> None:
+        self.pairs = list(pairs)
+        self.size = size
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    def __getitem__(self, index: int):
+        img_path, ann_path = self.pairs[index]
+        img, boxes = load_image_and_boxes(img_path, ann_path, self.size)
+        # Unreadable frames are dropped by the collate step, not here: a
+        # Dataset must return something for every index it is asked for.
+        return img, boxes
+
+
+def _collate_frames(batch):
+    """Collates a batch of (image, boxes), dropping unreadable frames.
+
+    Deliberately does NOT stack into a tensor: `compute_features` and the
+    Ultralytics YOLO call both want a list of HxWx3 BGR uint8 arrays, and box
+    lists are ragged. Stacking happens later, on the GPU side.
+
+    Args:
+        batch: A list of (image_or_None, boxes) tuples from FramePairDataset.
+
+    Returns:
+        A tuple (images, boxes_per_image) of equal length, with None images
+        (and their boxes) removed -- matching `iter_frames`, which skips them.
+    """
+    images, boxes = [], []
+    for img, box_list in batch:
+        if img is None:
+            continue
+        images.append(img)
+        boxes.append(box_list)
+    return images, boxes
+
+
+def _worker_init(_worker_id: int) -> None:
+    """Disables OpenCV's internal thread pool inside DataLoader workers.
+
+    Without this, each of N worker processes spawns its own OpenCV thread
+    pool sized to the whole machine, and they oversubscribe the CPU and fight
+    each other -- which can make a multi-worker loader *slower* than the
+    serial one.
+    """
+    cv2.setNumThreads(0)
+
+
+def iter_frame_batches(
+    pairs: Sequence[Tuple[str, str]],
+    batch_size: int = 32,
+    num_workers: int = 8,
+    size: Tuple[int, int] = IMAGE_SIZE,
+) -> Iterator[Tuple[List[np.ndarray], List[List[Dict]]]]:
+    """Streams (images, boxes) in batches, decoding in parallel worker processes.
+
+    The batched, parallel-decode counterpart to `iter_frames`. Yields the same
+    frames in the same order, just grouped and decoded ahead of time. Peak
+    memory stays bounded (batch_size * prefetch_factor * num_workers frames at
+    320x224, a few hundred MB at most), so this is still safe on the full
+    96,897-image train split.
+
+    Falls back to the serial `iter_frames` path when `num_workers == 0` or when
+    torch is unavailable, so nothing here becomes a hard torch dependency for
+    callers that do not need it.
+
+    Args:
+        pairs: (image_path, annotation_path) pairs.
+        batch_size: Frames per yielded batch.
+        num_workers: DataLoader worker processes. 0 runs serially in-process.
+        size: Target (width, height).
+
+    Yields:
+        (images, boxes_per_image) tuples. `images` is a list of BGR uint8
+        arrays of shape (size[1], size[0], 3); `boxes_per_image[i]` holds the
+        box dicts for `images[i]`. Unreadable frames are skipped, so a batch
+        may be shorter than `batch_size` (and may be empty).
+    """
+    pairs = list(pairs)
+
+    if num_workers <= 0:
+        batch_imgs, batch_boxes = [], []
+        for img, boxes in iter_frames(pairs, size):
+            batch_imgs.append(img)
+            batch_boxes.append(boxes)
+            if len(batch_imgs) >= batch_size:
+                yield batch_imgs, batch_boxes
+                batch_imgs, batch_boxes = [], []
+        if batch_imgs:
+            yield batch_imgs, batch_boxes
+        return
+
+    from torch.utils.data import DataLoader
+
+    loader = DataLoader(
+        FramePairDataset(pairs, size),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        collate_fn=_collate_frames,
+        worker_init_fn=_worker_init,
+        pin_memory=False,  # These are numpy arrays, not tensors -- nothing to pin.
+        persistent_workers=False,
+        prefetch_factor=4,
+    )
+    for images, boxes in loader:
+        yield images, boxes
+
+
 def scan_label_vocabulary(
     part_dir: str, splits: Sequence[str] = ("train", "val"), limit: Optional[int] = 5000
 ) -> "collections.Counter":

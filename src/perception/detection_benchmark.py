@@ -40,7 +40,7 @@ from typing import Dict, List, Sequence, Tuple
 import cv2
 import numpy as np
 
-from src.perception.feature_extraction import CONF_THRESHOLD, VEHICLES, run_detection
+from src.perception.feature_extraction import CONF_THRESHOLD, VEHICLES, load_yolo, run_detection
 
 VEHICLE_CLASS_ID = 3  # IDD-Lite level3Id 'vehicles' class -- see feature_extraction.py
 MIN_BLOB_AREA = 20
@@ -498,7 +498,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     ensure_output_dirs()
-    yolo = YOLO(YOLO_WEIGHTS)
+    yolo = load_yolo(YOLO_WEIGHTS)
 
     if args.dataset == "idd-lite":
         from src.perception.data_pipeline import load_and_clean_dataset

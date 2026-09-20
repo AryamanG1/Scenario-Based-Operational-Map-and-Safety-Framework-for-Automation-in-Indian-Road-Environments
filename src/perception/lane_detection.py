@@ -281,9 +281,12 @@ if __name__ == "__main__":
     segnet = load_segnet(SEGNET_CHECKPOINT)
 
     sample_img = images[0]
-    img_t = torch.tensor(sample_img).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+    # Input must live on the same device load_segnet() put the model on, and
+    # the result must come back to the host before .numpy().
+    device = next(segnet.parameters()).device
+    img_t = (torch.tensor(sample_img).permute(2, 0, 1).float().unsqueeze(0) / 255.0).to(device)
     with torch.no_grad():
-        pred_mask = segnet(img_t).argmax(dim=1).squeeze(0).numpy().astype(np.uint8)
+        pred_mask = segnet(img_t).argmax(dim=1).squeeze(0).cpu().numpy().astype(np.uint8)
 
     lane_result = detect_lanes(sample_img, pred_mask)
     print(f"Lane confidence: {lane_result.lane_confidence}")

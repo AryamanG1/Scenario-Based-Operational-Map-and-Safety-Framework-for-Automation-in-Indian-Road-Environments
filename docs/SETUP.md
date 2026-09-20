@@ -4,7 +4,7 @@
 
 - Python 3.10+ (developed/tested on 3.12).
 - ~64 GB free disk is comfortable but not required; the actual footprint (venv + dataset + checkpoints + outputs) is well under 1 GB.
-- No GPU required. This project was built and verified entirely on a CPU-only machine (Intel iGPU, no NVIDIA GPU); every module auto-detects `torch.cuda.is_available()` and prints a warning + falls back to CPU where relevant (`segnet_model.py`, `perturbation_engine.py`, `feature_extraction.py`, `odd_classifier.py`, `full_dataset_pipeline.py`, `ecofusion_gate.py`).
+- No GPU required. This project was built and verified entirely on a CPU-only machine (Intel iGPU, no NVIDIA GPU); every module auto-detects `torch.cuda.is_available()` and prints a warning + falls back to CPU where relevant (`segnet_model.py`, `perturbation_engine.py`, `feature_extraction.py`, `odd_classifier.py`, `full_dataset_pipeline.py`, `ecofusion_gate.py`, `copula_gpu.py`). **On a GPU machine, do not follow the CPU-wheel step below** -- see "GPU machine" right after it.
 
 ## Environment
 
@@ -36,6 +36,35 @@ print('ultralytics OK, classes:', len(m.names))
 ```
 
 `ultralytics` downloads `yolov8n.pt` into the current directory on first use if it isn't found; move it to `models/yolov8n.pt` (or run the command from inside `models/`) so `src/common/paths.py::YOLO_WEIGHTS` finds it.
+
+### GPU machine (NVIDIA, CUDA)
+
+The CPU wheel above has **no CUDA kernels**: on a GPU box it makes `torch.cuda.is_available()` return `False` and every stage silently runs on CPU. Install the CUDA build instead, then the rest of `requirements.txt` (full notes and driver/CUDA matching in `requirements-gpu.txt`):
+
+```bash
+nvidia-smi   # top-right shows the max CUDA version your driver supports
+pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cu124   # or cu121
+pip install -r requirements.txt
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"   # must be '+cu...' and True
+```
+
+What actually runs on the GPU, and how to keep it busy:
+
+| Stage | GPU work | CPU-bound part | Knob |
+|---|---|---|---|
+| 2 SegNet training | forward/backward, AMP | -- | `--segnet_batch_size` (8 default; training dynamics change if you raise it) |
+| 2 feature extraction | batched SegNet + YOLO, all mask/image reductions, Laplacian | JPEG decode (parallel workers), pothole connected-components | `--feature_batch_size 256 --num_workers <nproc>` |
+| 5 / 7 ODD copula | KDE + Gaussian-copula density for all rows at once (`src/odd/copula_gpu.py`) | -- | none needed |
+| 6 monitoring | perturbations, batched SegNet + YOLO over the pseudo-sequence, IoU | -- | none needed |
+| 3, 4, 7 (tabular) | -- (vectorized numpy/pandas; sklearn RandomForest stays on CPU) | -- | -- |
+
+On a 40 GB card a sensible full run is:
+
+```bash
+python main.py --feature_batch_size 256 --num_workers $(nproc)
+```
+
+If `nvidia-smi dmon -s u` shows low utilization during Stage 2, the JPEG decode is the limit: `--num_workers` is the knob, not batch size.
 
 ## Dataset
 

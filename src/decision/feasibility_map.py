@@ -40,7 +40,8 @@ from typing import Optional
 import pandas as pd
 
 from src.odd.fuzzy_odd import classify_dataframe as classify_scenario
-from src.odd.odd_boundary import DEFAULT_ODD_VARIABLES, classify_odd_region, fit_odd_copula, odd_density
+from src.odd.copula_gpu import classify_odd_region_batch
+from src.odd.odd_boundary import DEFAULT_ODD_VARIABLES, ODDCopulaModel, classify_odd_region, fit_odd_copula, odd_density
 from src.odd.odd_classifier import FeatureScaler, assign_mode, combine_stage_outputs
 from src.odd.traffic_density import classify_dataframe as classify_traffic
 
@@ -116,6 +117,7 @@ def build_feasibility_map(
     feature_scaler: FeatureScaler,
     odd_variables=DEFAULT_ODD_VARIABLES,
     default_monitoring_state: str = "Nominal",
+    copula: Optional[ODDCopulaModel] = None,
 ) -> pd.DataFrame:
     """Builds the full Scenario-Based Feasibility Map for a features dataset.
 
@@ -128,6 +130,11 @@ def build_feasibility_map(
         odd_variables: Which columns to fit the Stage 5 ODD copula over.
         default_monitoring_state: The Stage 6 status assumed for every row
             (see module docstring for why Stage 6 isn't run per-row here).
+        copula: An already-fitted ODDCopulaModel over `odd_variables`. If
+            None, one is fitted here from `features_df`. main.py fits the
+            same model in Stage 5, so passing it in avoids refitting -- on
+            the ~104k-row combined corpus the fit is the single most
+            expensive step of this function.
 
     Returns:
         A copy of features_df with one FeasibilityRecord's fields appended
@@ -136,26 +143,33 @@ def build_feasibility_map(
     traffic_df, _ = classify_traffic(features_df)
     scenario_df, _, _ = classify_scenario(traffic_df)
 
-    copula = fit_odd_copula(features_df, odd_variables)
+    if copula is None:
+        copula = fit_odd_copula(features_df, odd_variables)
 
     scaled_df = feature_scaler.transform(features_df)
 
+    # All the per-row work that can be batched, done once up front: the copula
+    # density (GPU-batched) and the column lookups that were `.iloc[i]` per row.
+    odd_regions = classify_odd_region_batch(copula, features_df[odd_variables])
+    scaled_rows = scaled_df.to_dict("records")
+    traffic_levels = scenario_df["traffic_density_level"].tolist()
+    scenario_labels = scenario_df["scenario_label"].tolist()
+    mu_odd_labels = scenario_df["mu_odd_label"].tolist()
+
     records = []
     for i in range(len(features_df)):
-        scaled_row = scaled_df.iloc[i]
+        scaled_row = scaled_rows[i]
         base_mode = assign_mode(scaled_row)
-
-        odd_row = {v: features_df.iloc[i][v] for v in odd_variables}
-        odd_region = classify_odd_region(copula, odd_row)
+        odd_region = odd_regions[i]
 
         final_mode = combine_stage_outputs(base_mode, odd_region, default_monitoring_state)
         score = compute_odd_score(scaled_row)
 
         records.append(
             FeasibilityRecord(
-                traffic_density_level=scenario_df.iloc[i]["traffic_density_level"],
-                scenario_label=scenario_df.iloc[i]["scenario_label"],
-                mu_odd_label=scenario_df.iloc[i]["mu_odd_label"],
+                traffic_density_level=traffic_levels[i],
+                scenario_label=scenario_labels[i],
+                mu_odd_label=mu_odd_labels[i],
                 odd_region=odd_region,
                 final_mode=final_mode,
                 odd_score=score,

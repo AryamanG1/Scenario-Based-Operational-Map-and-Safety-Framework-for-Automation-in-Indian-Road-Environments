@@ -32,7 +32,7 @@ from typing import List
 import numpy as np
 import torch
 
-from src.perception.feature_extraction import CONF_THRESHOLD, run_detection
+from src.perception.feature_extraction import CONF_THRESHOLD, load_yolo, run_detection, run_detection_batch
 from src.monitoring.perturbation_engine import DEVICE, calculate_metrics, perturb_image_gpu, sample_delta
 
 SEQUENCE_LENGTH = 6
@@ -118,23 +118,38 @@ def run_perception_monitor(
     Returns:
         A MonitoringResult.
     """
-    baseline_tensor = torch.tensor(image).permute(2, 0, 1).float() / 255.0
-    baseline_mask = _predicted_mask(segnet_model, baseline_tensor)
+    segnet_model.eval()
+    baseline_tensor = (torch.tensor(image).permute(2, 0, 1).float() / 255.0).to(DEVICE)
     baseline_confidence = _mean_confident_confidence(run_detection(image, yolo_model))
 
-    checks: List[FrameCheckResult] = []
+    # Perturb each pseudo-frame individually and in order, so the random
+    # draws (Python `random` in sample_delta, torch RNG in the noise step)
+    # consume the exact same sequence as the original one-at-a-time loop.
+    # The perturbed frames stay on the device and are then scored in ONE
+    # SegNet forward and ONE YOLO call instead of num_checks of each, with a
+    # single device->host copy for YOLO's input.
+    perturbed: List[torch.Tensor] = []
     for i in range(num_checks):
         region = MONITORED_REGIONS[i % len(MONITORED_REGIONS)]
         delta = sample_delta(region)
-        perturbed_tensor = perturb_image_gpu(baseline_tensor.to(DEVICE), delta)
+        perturbed.append(perturb_image_gpu(baseline_tensor, delta))
 
-        perturbed_mask = _predicted_mask(segnet_model, perturbed_tensor)
-        mask_iou, _ = calculate_metrics(
-            torch.tensor(perturbed_mask), torch.tensor(baseline_mask), num_classes=8
-        )
+    with torch.no_grad():
+        batch = torch.stack([baseline_tensor] + perturbed, dim=0)  # (1 + num_checks, 3, H, W)
+        masks = segnet_model(batch).argmax(dim=1)
+    baseline_mask = masks[0]
 
-        perturbed_img = (perturbed_tensor.detach().cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-        perturbed_confidence = _mean_confident_confidence(run_detection(perturbed_img, yolo_model))
+    if num_checks > 0:
+        perturbed_u8 = (torch.stack(perturbed, dim=0).detach().cpu().permute(0, 2, 3, 1).numpy() * 255).astype(np.uint8)
+        perturbed_detections = run_detection_batch(list(perturbed_u8), yolo_model)
+    else:
+        perturbed_detections = []
+
+    checks: List[FrameCheckResult] = []
+    for i in range(num_checks):
+        mask_iou, _ = calculate_metrics(masks[i + 1], baseline_mask, num_classes=8)
+
+        perturbed_confidence = _mean_confident_confidence(perturbed_detections[i])
         confidence_drop = max(baseline_confidence - perturbed_confidence, 0.0)
 
         is_bad = (mask_iou < IOU_CONSISTENCY_THRESHOLD) or (confidence_drop > CONFIDENCE_DROP_THRESHOLD)
@@ -172,7 +187,7 @@ if __name__ == "__main__":
 
     images, _ = load_and_clean_dataset(dataset_dir)
     segnet = load_segnet(checkpoint_path)
-    yolo = YOLO(yolo_weights_path)
+    yolo = load_yolo(yolo_weights_path)
 
     for i in range(3):
         result = run_perception_monitor(images[i], segnet, yolo)

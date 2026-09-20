@@ -60,7 +60,7 @@ from src.odd.rss_safety import (
     stability_margin,
 )
 from src.perception.data_pipeline import load_and_clean_dataset
-from src.perception.feature_extraction import DEVICE, compute_features, run_detection
+from src.perception.feature_extraction import DEVICE, compute_features, load_yolo, run_detection
 from src.simulation.carla_bridge import CarlaTickSource, is_carla_available
 from src.simulation.carla_config import CarlaConfig, load_carla_config
 from src.simulation.local_kinematic_sim import LocalKinematicTickSource
@@ -354,7 +354,7 @@ if __name__ == "__main__":
     config = load_carla_config(args.carla_config)
 
     segnet = load_segnet(SEGNET_CHECKPOINT)
-    yolo = YOLO(YOLO_WEIGHTS)
+    yolo = load_yolo(YOLO_WEIGHTS)
     feature_scaler = joblib.load(FEATURE_SCALER_PATH)
 
     result_df = run_closed_loop_simulation(

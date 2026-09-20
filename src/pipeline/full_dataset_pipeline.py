@@ -20,7 +20,7 @@ from tqdm import tqdm
 from ultralytics import YOLO
 
 from src.perception.data_pipeline import IMAGE_SIZE, VOID_LABEL
-from src.perception.feature_extraction import compute_features, run_detection
+from src.perception.feature_extraction import compute_features, load_yolo, run_detection
 from src.odd.odd_classifier import FeatureScaler, assign_mode  # noqa: F401 (FeatureScaler needed for joblib.load)
 from src.monitoring.perturbation_engine import calculate_metrics
 from src.perception.segnet_model import load_segnet
@@ -106,17 +106,25 @@ def run_full_dataset_pipeline(
     )
 
     segnet = load_segnet(segnet_checkpoint, device=DEVICE)
-    yolo = YOLO(yolo_weights)
+    yolo = load_yolo(yolo_weights)
     feature_scaler: FeatureScaler = joblib.load(feature_scaler_path)
 
     buffer_rows: List[dict] = []
 
+    checkpoint_has_rows = not done_df.empty
+
     def _flush() -> None:
+        # Append-only: the previous version re-read the entire (growing)
+        # checkpoint CSV and rewrote it on every flush, which is quadratic
+        # I/O over a long run. Header is written only for a fresh file.
+        nonlocal checkpoint_has_rows
         if not buffer_rows:
             return
-        new_df = pd.DataFrame(buffer_rows)
-        combined = pd.concat([_load_checkpoint(checkpoint_path), new_df], ignore_index=True)
-        combined.to_csv(checkpoint_path, index=False)
+        pd.DataFrame(buffer_rows).to_csv(
+            checkpoint_path, mode="a" if checkpoint_has_rows else "w",
+            header=not checkpoint_has_rows, index=False,
+        )
+        checkpoint_has_rows = True
         buffer_rows.clear()
 
     for i in tqdm(range(0, len(remaining), batch_size), desc="Batches"):

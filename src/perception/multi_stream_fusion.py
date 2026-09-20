@@ -232,22 +232,45 @@ def fuse_dataframe(df: pd.DataFrame, refs: StreamReferences = None) -> pd.DataFr
     if refs is None:
         refs = calibrate_references(df)
 
+    # Whole-column equivalents of compute_stream_reliabilities /
+    # compute_context_factor / compute_fusion_weights / compute_fused_confidence.
+    # The previous `df.iterrows()` + seven `.at[]` writes per row cost ~100us
+    # per row of pure pandas overhead for three-element arithmetic -- on the
+    # ~104k-row combined corpus that was the whole stage. Operation order is
+    # kept identical to the scalar functions so the numbers match exactly.
+    drivable = df["drivable_area"].to_numpy(dtype=np.float64)
+    det_conf = df["detection_confidence"].to_numpy(dtype=np.float64)
+    visibility = df["visibility"].to_numpy(dtype=np.float64)
+    brightness = df["brightness"].to_numpy(dtype=np.float64)
+
+    def _rel(values: np.ndarray, median: float) -> np.ndarray:
+        if median > 0:
+            return np.clip(np.minimum(values / median, 1.0), 0.0, 1.0)
+        return np.zeros_like(values)
+
+    r_segnet = _rel(drivable, refs.median_drivable_area)
+    r_yolo = np.clip(np.clip(det_conf, 0.0, 1.0), 0.0, 1.0)
+    r_image = _rel(visibility, refs.median_visibility)
+
+    brightness_factor = np.minimum(brightness / refs.median_brightness, 1.0) if refs.median_brightness > 0 else np.zeros_like(brightness)
+    visibility_factor = np.minimum(visibility / refs.median_visibility, 1.0) if refs.median_visibility > 0 else np.zeros_like(visibility)
+    context = np.clip(0.5 * brightness_factor + 0.5 * visibility_factor, 0.0, 1.0)
+
+    scores = np.stack([r_segnet * context, r_yolo * context, r_image * context], axis=1)  # STREAMS order
+    exp_scores = np.exp(SOFTMAX_TEMPERATURE * (scores - scores.max(axis=1, keepdims=True)))
+    weights = exp_scores / exp_scores.sum(axis=1, keepdims=True)
+
+    reliabilities = np.stack([r_segnet, r_yolo, r_image], axis=1)
+    # Same left-to-right summation order as compute_fused_confidence.
+    fused = weights[:, 0] * reliabilities[:, 0]
+    fused = fused + weights[:, 1] * reliabilities[:, 1]
+    fused = fused + weights[:, 2] * reliabilities[:, 2]
+
     df_out = df.copy()
-    for stream in STREAMS:
-        df_out[f"reliability_{stream}"] = 0.0
-        df_out[f"weight_{stream}"] = 0.0
-    df_out["fused_confidence"] = 0.0
-
-    for idx, row in df.iterrows():
-        reliabilities = compute_stream_reliabilities(row, refs)
-        context_factor = compute_context_factor(row, refs)
-        weights = compute_fusion_weights(reliabilities, context_factor)
-        fused_confidence = compute_fused_confidence(reliabilities, weights)
-
-        for stream in STREAMS:
-            df_out.at[idx, f"reliability_{stream}"] = reliabilities[stream]
-            df_out.at[idx, f"weight_{stream}"] = weights[stream]
-        df_out.at[idx, "fused_confidence"] = fused_confidence
+    for j, stream in enumerate(STREAMS):
+        df_out[f"reliability_{stream}"] = reliabilities[:, j]
+        df_out[f"weight_{stream}"] = weights[:, j]
+    df_out["fused_confidence"] = fused
 
     return df_out
 

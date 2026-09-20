@@ -1,0 +1,37 @@
+# GPU (CUDA) requirements for running the pipeline on a discrete NVIDIA GPU.
+#
+# requirements.txt is written for the CPU-only laptop this project was
+# originally developed on: it tells you to install torch/torchvision from
+# the /whl/cpu index. That build has no CUDA kernels at all, so on a GPU box
+# `torch.cuda.is_available()` returns False and EVERY "GPU" path in this
+# project silently falls back to CPU -- including SegNet training. The
+# fallback is deliberate (docs/SETUP.md) and correct, but it is also silent,
+# which makes "why is my H100/A100 idle?" very easy to misdiagnose.
+#
+# On a GPU machine, install torch FIRST from the CUDA index, then the rest
+# of requirements.txt (which will see torch already satisfied and leave it
+# alone):
+#
+#   # 1. Check the driver's max supported CUDA version (top-right of the
+#   #    nvidia-smi banner) and pick the matching index below.
+#   nvidia-smi
+#
+#   # 2. Install the CUDA build. cu124 suits most current drivers; use
+#   #    cu121 for older ones (driver >= 530).
+#   pip install torch==2.13.0 torchvision==0.28.0 \
+#       --index-url https://download.pytorch.org/whl/cu124
+#
+#   # 3. Install everything else.
+#   pip install -r requirements.txt
+#
+#   # 4. VERIFY before running anything long. This must print a '+cu...'
+#   #    build and True -- if it prints '+cpu' or False, stop and redo (2).
+#   python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+#
+# There are no extra Python packages needed for GPU execution: the GPU paths
+# in this project (batched SegNet/YOLO inference, the batched feature math in
+# src/perception/feature_extraction.py, and the GPU copula density in
+# src/odd/copula_gpu.py) are all plain torch. No CuPy, cuML, DALI or kornia.
+#
+# Suggested tuning flags on a 40GB+ card, see docs/SETUP.md:
+#   python main.py --segnet_batch_size 128 --feature_batch_size 64 --num_workers 12

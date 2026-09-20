@@ -78,10 +78,13 @@ def load_and_clean_dataset(dataset_dir: str) -> Tuple[np.ndarray, np.ndarray]:
         if img is None or lbl is None:
             removed += 1
             continue
-        if len(np.unique(lbl)) <= 1:
+        # One full-label sort instead of two: np.unique on a 1920x1080 array
+        # is the most expensive step of this loop after the JPEG decode.
+        label_ids = np.unique(lbl)
+        if len(label_ids) <= 1:
             removed += 1
             continue
-        if 0 not in np.unique(lbl):
+        if 0 not in label_ids:
             removed += 1
             continue
 

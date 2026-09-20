@@ -41,13 +41,13 @@ for why a full-dataset run is too expensive to precompute).
 import argparse
 import json
 import os
+import time
 
 import joblib
 import numpy as np
 import pandas as pd
 import torch
 from sklearn.metrics import accuracy_score
-from ultralytics import YOLO
 
 from src.perception.data_pipeline import load_and_clean_dataset
 from src.perception.detection_benchmark import (
@@ -63,13 +63,19 @@ from src.decision.ecofusion_gate import (
     run_ecofusion_gate,
 )
 from src.decision.feasibility_map import build_feasibility_map, export_pipeline_stats_js
-from src.perception.feature_extraction import extract_all_features, extract_features_streaming
+from src.perception.feature_extraction import (
+    DEFAULT_FEATURE_BATCH_SIZE,
+    DEFAULT_NUM_WORKERS,
+    extract_all_features,
+    extract_features_streaming,
+    load_yolo,
+)
 from src.odd.fuzzy_odd import classify_dataframe as classify_scenario
 from src.perception.lane_detection import compute_lane_features, detect_lanes
 from src.perception.multi_stream_fusion import calibrate_references, compute_stream_reliabilities, fuse_dataframe
+from src.odd.copula_gpu import classify_odd_region_batch
 from src.odd.odd_boundary import (
     DEFAULT_ODD_VARIABLES,
-    classify_odd_region,
     fit_odd_copula,
     save_odd_copula,
 )
@@ -181,6 +187,21 @@ def _parse_args() -> argparse.Namespace:
         "'combined' (0 = all 7,034). Useful for a fast smoke test.",
     )
     parser.add_argument(
+        "--feature_batch_size",
+        type=int,
+        default=DEFAULT_FEATURE_BATCH_SIZE,
+        help="Frames per SegNet/YOLO forward pass during Stage 2 feature extraction "
+        "and the Stage 7 held-out table. 64 is safe anywhere; 256 suits a 40GB+ GPU.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=DEFAULT_NUM_WORKERS,
+        help="Parallel JPEG-decode worker processes for streaming IDD117K feature "
+        "extraction (0 = serial). Decode, not the GPU, is the throughput limit on "
+        "a GPU box: raise this toward `nproc`.",
+    )
+    parser.add_argument(
         "--detection_gt",
         choices=("idd-lite", "idd117k"),
         default="idd117k",
@@ -261,14 +282,31 @@ def _parse_args() -> argparse.Namespace:
     return args
 
 
+_last_banner_time = None
+
+
+def _banner(title: str) -> None:
+    """Prints a stage banner, with the wall-clock time the previous stage took."""
+    global _last_banner_time
+    now = time.perf_counter()
+    if _last_banner_time is not None:
+        print(f"[stage time: {now - _last_banner_time:.1f}s]")
+    _last_banner_time = now
+    print("=" * 60)
+    print(title)
+    print("=" * 60)
+
+
 def main() -> None:
     """Runs Stages 1-7 of the ODD safety-framework pipeline end-to-end."""
     args = _parse_args()
     print("MARKER: COMBINED_DATASETS_PIPELINE_V2")
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_memory / 1e9:.0f} GB)")
+    else:
+        print("GPU: none detected -- running on CPU (see docs/SETUP.md 'GPU machine' if this is a GPU box)")
 
-    print("=" * 60)
-    print("STAGE 1: Input Data")
-    print("=" * 60)
+    _banner("STAGE 1: Input Data")
     if args.segnet_dataset == "idd-lite":
         images, labels = load_and_clean_dataset(DATASET_DIR)
     elif args.segnet_dataset == "idd20k":
@@ -286,9 +324,7 @@ def main() -> None:
         )
     print(f"Clean dataset size: {len(images)} images")
 
-    print("=" * 60)
-    print("STAGE 2: Perception Layer")
-    print("=" * 60)
+    _banner("STAGE 2: Perception Layer")
     final_val_loss = None
     if os.path.isfile(args.segnet_checkpoint) and not args.force:
         print(f"Found existing checkpoint '{args.segnet_checkpoint}', loading instead of retraining.")
@@ -303,13 +339,15 @@ def main() -> None:
         segnet = load_segnet(args.segnet_checkpoint)
         final_val_loss = val_losses[-1]
 
-    yolo = YOLO(YOLO_WEIGHTS)
+    yolo = load_yolo(YOLO_WEIGHTS)
 
     if os.path.isfile(FEATURES_CSV) and not args.force:
         print(f"Found existing '{FEATURES_CSV}', skipping re-extraction.")
         features_df = pd.read_csv(FEATURES_CSV)
     else:
-        features_df = extract_all_features(images, labels, segnet, yolo, save_path=FEATURES_CSV)
+        features_df = extract_all_features(
+            images, labels, segnet, yolo, save_path=FEATURES_CSV, batch_size=args.feature_batch_size
+        )
 
     if not args.skip_idd117k_features:
         idd117k_feature_pairs = list_pairs(IDD117K_95K_DIR, args.idd117k_feature_split)
@@ -329,6 +367,8 @@ def main() -> None:
                 idd117k_feature_pairs, segnet, yolo,
                 save_path=FEATURES_IDD117K_CSV,
                 gt_save_path=FEATURES_IDD117K_GT_CSV,
+                batch_size=args.feature_batch_size,
+                num_workers=args.num_workers,
             )
 
         features_df = pd.concat([features_df, features_117k_df], ignore_index=True)
@@ -365,43 +405,31 @@ def main() -> None:
     fused_sample = fuse_dataframe(features_df.head(50), refs)
     print(f"Multi-stream fusion mean confidence (50 images): {fused_sample['fused_confidence'].mean():.3f}")
 
-    print("=" * 60)
-    print("STAGE 3: Traffic Density Estimation")
-    print("=" * 60)
+    _banner("STAGE 3: Traffic Density Estimation")
     traffic_df, density_thresholds = classify_traffic(features_df)
     print(traffic_df["traffic_density_level"].value_counts())
 
-    print("=" * 60)
-    print("STAGE 4: Scenario Classification")
-    print("=" * 60)
+    _banner("STAGE 4: Scenario Classification")
     scenario_df, pd_breakpoints, _ = classify_scenario(traffic_df, density_thresholds=density_thresholds)
     print(scenario_df["mu_odd_label"].value_counts())
 
-    print("=" * 60)
-    print("STAGE 5: ODD Mapping")
-    print("=" * 60)
+    _banner("STAGE 5: ODD Mapping")
     copula = fit_odd_copula(features_df, DEFAULT_ODD_VARIABLES)
     save_odd_copula(copula, ODD_COPULA_PATH)
-    regions = features_df[DEFAULT_ODD_VARIABLES].apply(
-        lambda row: classify_odd_region(copula, dict(zip(DEFAULT_ODD_VARIABLES, row))), axis=1
-    )
+    regions = pd.Series(classify_odd_region_batch(copula, features_df))
     print("ODD region distribution:")
     print(regions.value_counts())
 
     risk_result = estimate_odd_failure_probability(copula, features_df, severity_threshold=0.95)
     print(f"P(scene in worst 5% of ODD space) ~= {risk_result.failure_probability:.4f}")
 
-    print("=" * 60)
-    print("STAGE 6: Real-Time Performance Monitoring")
-    print("=" * 60)
+    _banner("STAGE 6: Real-Time Performance Monitoring")
     print(f"Demonstrating on {args.monitor_samples} sample frames (see module docstring for why " "a full-dataset run is not batch-precomputed):")
     for i in range(min(args.monitor_samples, len(images))):
         result = run_perception_monitor(images[i], segnet, yolo)
         print(f"  frame {i}: state={result.state}, max_consecutive_bad={result.max_consecutive_bad}")
 
-    print("=" * 60)
-    print("STAGE 7: Decision System")
-    print("=" * 60)
+    _banner("STAGE 7: Decision System")
     stage7_features_csv = FEATURES_COMBINED_CSV if not args.skip_idd117k_features else FEATURES_CSV
     X, df_cleaned, y, feature_scaler, label_encoder = load_and_clean_features(stage7_features_csv)
     df_cleaned.to_csv(CLEANED_CSV, index=False)
@@ -415,13 +443,17 @@ def main() -> None:
     if not args.skip_holdout_eval:
         print("Building held-out validation feature table (real val splits, never used in any training step)...")
         val_images, val_labels = load_idd20k_split(IDD20K_DIR, "val", limit=args.holdout_limit or None)
-        val_features_df = extract_all_features(val_images, val_labels, segnet, yolo, save_path=FEATURES_VAL_CSV)
+        val_features_df = extract_all_features(
+            val_images, val_labels, segnet, yolo, save_path=FEATURES_VAL_CSV, batch_size=args.feature_batch_size
+        )
 
         val_117k_pairs = sample_pairs(list_pairs(IDD117K_95K_DIR, "val"), args.holdout_limit or None)
         val_features_117k_df = extract_features_streaming(
             val_117k_pairs, segnet, yolo,
             save_path=FEATURES_IDD117K_VAL_CSV,
             gt_save_path=FEATURES_IDD117K_VAL_GT_CSV,
+            batch_size=args.feature_batch_size,
+            num_workers=args.num_workers,
         )
         val_combined_df = pd.concat([val_features_df, val_features_117k_df], ignore_index=True)
         val_combined_df.to_csv(FEATURES_VAL_COMBINED_CSV, index=False)
@@ -455,16 +487,14 @@ def main() -> None:
     print(f"EcoFusion sample decision (lambda_E=0.1): selected={sorted(decision.selected_config)}")
 
     print("Building Scenario-Based Feasibility Map...")
-    feasibility_df = build_feasibility_map(features_df, feature_scaler)
+    feasibility_df = build_feasibility_map(features_df, feature_scaler, copula=copula)
     feasibility_df.to_csv(FEASIBILITY_MAP_CSV, index=False)
     export_pipeline_stats_js(feasibility_df, PIPELINE_STATS_JS)
     print(f"Wrote dashboard pipeline stats -> '{PIPELINE_STATS_JS}'")
     print(feasibility_df["final_mode"].value_counts())
 
     if args.carla:
-        print("=" * 60)
-        print("STAGE 8: Closed-Loop Simulation (optional)")
-        print("=" * 60)
+        _banner("STAGE 8: Closed-Loop Simulation (optional)")
         carla_config = load_carla_config(args.carla_config)
         carla_result_df = run_closed_loop_simulation(
             num_ticks=args.carla_ticks,
@@ -485,9 +515,7 @@ def main() -> None:
         )
         print(f"Wrote dashboard replay data -> '{DASHBOARD_CARLA_LIVE_JS}'")
 
-    print("=" * 60)
-    print("FINAL SUMMARY")
-    print("=" * 60)
+    _banner("FINAL SUMMARY")
     print(f"Clean dataset size: {len(images)} images")
     print(f"Total Stage 3-7 feature rows (combined corpus): {len(features_df)}")
     if final_val_loss is not None:

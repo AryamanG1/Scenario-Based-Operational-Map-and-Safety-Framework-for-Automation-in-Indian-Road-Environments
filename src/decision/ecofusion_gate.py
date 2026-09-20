@@ -333,8 +333,6 @@ def run_selected_branches(
 
 
 if __name__ == "__main__":
-    from ultralytics import YOLO
-
     from src.common.paths import (
         DATA_DIR,
         ECOFUSION_DEEP_GATE_PATH,
@@ -345,6 +343,7 @@ if __name__ == "__main__":
     )
     from src.perception.data_pipeline import load_and_clean_dataset
     from src.perception.segnet_model import load_segnet
+    from src.perception.feature_extraction import load_yolo
 
     ensure_output_dirs()
     features_path = FEATURES_CSV
@@ -365,7 +364,7 @@ if __name__ == "__main__":
 
     images, _ = load_and_clean_dataset(dataset_dir)
     segnet = load_segnet(SEGNET_CHECKPOINT)
-    yolo = YOLO(YOLO_WEIGHTS)
+    yolo = load_yolo(YOLO_WEIGHTS)
     branch_latencies = profile_branch_latencies(images[0], segnet, yolo)
     print(f"Profiled branch latencies (s): {branch_latencies}")
 

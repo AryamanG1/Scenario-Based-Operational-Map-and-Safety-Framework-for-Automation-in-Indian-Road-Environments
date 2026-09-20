@@ -129,8 +129,16 @@ def train_segnet(
     )
     train_ds = TensorDataset(images_t[train_idx], labels_t[train_idx])
     val_ds = TensorDataset(images_t[val_idx], labels_t[val_idx])
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
+    # The dataset is already a CPU tensor, so workers only do indexing and
+    # collation; pin_memory lets the per-step .to(DEVICE) copy run
+    # asynchronously on CUDA (harmless no-op on CPU).
+    loader_kwargs = dict(
+        pin_memory=(DEVICE.type == "cuda"),
+        num_workers=2 if DEVICE.type == "cuda" else 0,
+        persistent_workers=(DEVICE.type == "cuda"),
+    )
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, **loader_kwargs)
 
     model = SegNet().to(DEVICE)
     if initial_state_dict is not None:
@@ -149,29 +157,34 @@ def train_segnet(
 
     for epoch in range(1, epochs + 1):
         model.train()
-        running_train_loss = 0.0
+        # Accumulate on-device: `loss.item()` inside the loop forces a
+        # cudaStreamSynchronize every step, which stalls the GPU pipeline.
+        # Sum as a tensor and read back once per epoch instead.
+        running_train_loss = torch.zeros((), dtype=torch.float64, device=DEVICE)
         for imgs, lbls in train_loader:
-            imgs, lbls = imgs.to(DEVICE), lbls.to(DEVICE)
-            optimizer.zero_grad()
+            imgs = imgs.to(DEVICE, non_blocking=True)
+            lbls = lbls.to(DEVICE, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=DEVICE.type, enabled=(DEVICE.type == "cuda")):
                 outputs = model(imgs)
                 loss = criterion(outputs, lbls)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
-            running_train_loss += loss.item() * imgs.size(0)
-        train_loss = running_train_loss / len(train_ds)
+            running_train_loss += loss.detach().to(torch.float64) * imgs.size(0)
+        train_loss = running_train_loss.item() / len(train_ds)
 
         model.eval()
-        running_val_loss = 0.0
+        running_val_loss = torch.zeros((), dtype=torch.float64, device=DEVICE)
         with torch.no_grad():
             for imgs, lbls in val_loader:
-                imgs, lbls = imgs.to(DEVICE), lbls.to(DEVICE)
+                imgs = imgs.to(DEVICE, non_blocking=True)
+                lbls = lbls.to(DEVICE, non_blocking=True)
                 with torch.autocast(device_type=DEVICE.type, enabled=(DEVICE.type == "cuda")):
                     outputs = model(imgs)
                     loss = criterion(outputs, lbls)
-                running_val_loss += loss.item() * imgs.size(0)
-        val_loss = running_val_loss / len(val_ds)
+                running_val_loss += loss.detach().to(torch.float64) * imgs.size(0)
+        val_loss = running_val_loss.item() / len(val_ds)
 
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]

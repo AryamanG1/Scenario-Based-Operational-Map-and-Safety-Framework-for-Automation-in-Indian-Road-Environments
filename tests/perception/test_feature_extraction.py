@@ -84,3 +84,76 @@ def test_full_extraction_on_real_images(small_images_labels, segnet, yolo):
     assert len(df.columns) == 22
     assert (df["brightness"] >= 0).all() and (df["brightness"] <= 255).all()
     assert (df["drivable_area"] >= 0).all() and (df["drivable_area"] <= 1).all()
+
+
+# --- Batched (GPU) path must reproduce the per-frame path exactly -----------
+
+
+def test_compute_features_batch_matches_per_frame_on_synthetic_frames():
+    """Same masks + same detections through both paths -> same 22 numbers."""
+    import pandas as pd
+    import torch
+
+    from src.perception.feature_extraction import compute_features_batch
+
+    rng = np.random.default_rng(0)
+    frames = [rng.integers(0, 256, (224, 320, 3), dtype=np.uint8) for _ in range(6)]
+    masks = [rng.integers(0, 8, (224, 320)).astype(np.uint8) for _ in range(6)]
+    masks[3][:] = 5  # no road at all -> road_quality / road_end_distance edge case
+    masks[4][:100] = 7  # road only in the lower part of the frame
+    dets_per_frame = [
+        [
+            {"class": "car", "bbox": [10, 10, 40, 40], "confidence": 0.9},
+            {"class": "person", "bbox": [50, 50, 20, 60], "confidence": 0.2},
+            {"class": "motorcycle", "bbox": [5, 5, 30, 30], "confidence": 0.75},
+        ],
+        [],
+        [{"class": "car", "bbox": [0, 0, 20, 20], "confidence": 0.5}],
+        [],
+        [{"class": "cow", "bbox": [0, 0, 20, 20], "confidence": 0.95}],
+        [{"class": "bus", "bbox": [0, 0, 300, 200], "confidence": 0.99}],
+    ]
+
+    legacy = pd.DataFrame([compute_features(f, m, d) for f, m, d in zip(frames, masks, dets_per_frame)])
+    batched = pd.DataFrame(compute_features_batch(frames, torch.from_numpy(np.stack(masks)).long(), dets_per_frame))
+
+    assert list(legacy.columns) == list(batched.columns)
+    pd.testing.assert_frame_equal(legacy, batched, rtol=1e-9, atol=1e-9, check_dtype=False)
+
+
+def test_extract_all_features_batched_matches_per_frame(small_images_labels, segnet, yolo):
+    """End-to-end on real frames: batched SegNet/YOLO/features == per-frame."""
+    import pandas as pd
+
+    from src.perception.feature_extraction import (
+        extract_features_for_batch,
+        predict_mask,
+        run_detection,
+    )
+
+    images, _ = small_images_labels
+    images = images[:8]
+    segnet.eval()
+
+    legacy = pd.DataFrame(
+        [compute_features(im, predict_mask(im, segnet), run_detection(im, yolo)) for im in images]
+    )
+    batched = pd.DataFrame(extract_features_for_batch(list(images), segnet, yolo))
+
+    assert list(legacy.columns) == list(batched.columns)
+    # Integer-valued columns (counts, presence) must match exactly; the rest
+    # to float tolerance. Batched YOLO confidences differ from batch-1 at the
+    # ~1e-6 level (accumulation order), so detection_confidence and
+    # scene_complexity get a slightly looser tolerance.
+    exact_cols = [
+        "vehicle_count", "num_two_wheelers", "num_pedestrians", "num_animals",
+        "num_autorickshaws", "object_presence", "traffic_density", "pothole_heuristic_count",
+    ]
+    for col in exact_cols:
+        assert (legacy[col] == batched[col]).all(), col
+    loose = {"detection_confidence", "scene_complexity", "object_distance", "lead_vehicle_distance"}
+    for col in legacy.columns:
+        if col in exact_cols:
+            continue
+        rtol = 1e-4 if col in loose else 1e-9
+        np.testing.assert_allclose(legacy[col].to_numpy(), batched[col].to_numpy(), rtol=rtol, atol=1e-9, err_msg=col)

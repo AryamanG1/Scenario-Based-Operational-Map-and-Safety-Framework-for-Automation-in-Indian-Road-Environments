@@ -168,17 +168,34 @@ def calculate_metrics(
         A tuple (miou, pixel_accuracy). Classes with zero union are skipped
         when averaging IoU.
     """
-    pixel_accuracy = (pred == target).sum().item() / target.numel()
+    # All counts are computed on whatever device the masks live on and
+    # brought across in ONE transfer. The previous per-class loop did two
+    # `.item()` calls per class (17 device syncs per call), which dominated
+    # when this ran inside the Stage 6 per-frame loop.
+    pred_f = pred.reshape(-1).long()
+    target_f = target.reshape(-1).long()
+    correct = (pred_f == target_f).sum()
+
+    # Confusion matrix via bincount. Labels >= num_classes (e.g. a void id)
+    # go to an extra bucket so they never match any counted class -- exactly
+    # what the old `pred == cls` loop did for them.
+    k = num_classes + 1
+    p_idx = torch.where(pred_f < num_classes, pred_f, torch.full_like(pred_f, num_classes))
+    t_idx = torch.where(target_f < num_classes, target_f, torch.full_like(target_f, num_classes))
+    confusion = torch.bincount(t_idx * k + p_idx, minlength=k * k).reshape(k, k)
+    intersection = torch.diagonal(confusion)[:num_classes]
+    union = confusion.sum(dim=0)[:num_classes] + confusion.sum(dim=1)[:num_classes] - intersection
+
+    counts = torch.cat([correct.reshape(1), intersection, union]).cpu().tolist()
+    pixel_accuracy = counts[0] / target.numel()
+    inter_list = counts[1 : 1 + num_classes]
+    union_list = counts[1 + num_classes :]
 
     ious = []
     for cls in range(num_classes):
-        pred_cls = pred == cls
-        target_cls = target == cls
-        intersection = (pred_cls & target_cls).sum().item()
-        union = (pred_cls | target_cls).sum().item()
-        if union == 0:
+        if union_list[cls] == 0:
             continue
-        ious.append(intersection / union)
+        ious.append(inter_list[cls] / union_list[cls])
     miou = sum(ious) / len(ious) if ious else 0.0
 
     return miou, pixel_accuracy

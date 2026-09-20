@@ -118,6 +118,20 @@ def estimate_failure_probability(
     )
 
 
+def density_to_severity_batch(density_percentiles: np.ndarray, density_values: np.ndarray) -> np.ndarray:
+    """Vectorized `density_to_severity` over an array of density values.
+
+    Args:
+        density_percentiles: A sorted reference array of density values.
+        density_values: Densities to convert, any shape.
+
+    Returns:
+        Severity scores in [0.0, 1.0], same shape as `density_values`.
+    """
+    rank = np.searchsorted(density_percentiles, density_values, side="right")
+    return 1.0 - rank / len(density_percentiles)
+
+
 def density_to_severity(density_percentiles: np.ndarray, density_value: float) -> float:
     """Converts an ODD-copula density into a severity score in [0.0, 1.0].
 
@@ -159,14 +173,12 @@ def estimate_odd_failure_probability(
     Returns:
         A SubsetSimulationResult over the dataset's severity scores.
     """
-    densities = df[copula_model.variables].apply(
-        lambda row: odd_density(copula_model, dict(zip(copula_model.variables, row))), axis=1
-    )
-    severities = densities.apply(
-        lambda d: density_to_severity(copula_model.density_percentiles, d)
-    )
+    from src.odd.copula_gpu import odd_density_batch
+
+    densities = odd_density_batch(copula_model, df)
+    severities = density_to_severity_batch(copula_model.density_percentiles, densities)
     return estimate_failure_probability(
-        severities.to_numpy(), severity_threshold, conditional_prob_target
+        severities, severity_threshold, conditional_prob_target
     )
 
 

@@ -246,6 +246,34 @@ class ODDCopulaModel:
     marginal_kdes: Dict[str, "stats.gaussian_kde"]
     correlation_matrix: np.ndarray
     density_percentiles: np.ndarray
+    # (p15, p50) of density_percentiles, cached at fit time. Optional so
+    # copula .pkl files saved before this field existed still load; see
+    # density_cutpoints() for the lazy fallback.
+    density_cutpoints: Optional[Tuple[float, float]] = None
+
+
+def density_cutpoints(model: ODDCopulaModel) -> Tuple[float, float]:
+    """Returns (p15, p50) of the model's training-density distribution.
+
+    These are loop-invariant, but `classify_odd_region` used to recompute
+    both `np.percentile`s over the full density array on EVERY call -- an
+    O(n) cost per row that made per-row classification O(n^2). Computed
+    once here and cached on the model.
+
+    Args:
+        model: A fitted ODDCopulaModel.
+
+    Returns:
+        (p15, p50) as floats.
+    """
+    cached = getattr(model, "density_cutpoints", None)
+    if cached is None:
+        cached = (
+            float(np.percentile(model.density_percentiles, 15)),
+            float(np.percentile(model.density_percentiles, 50)),
+        )
+        model.density_cutpoints = cached
+    return cached
 
 
 def _empirical_cdf(value: float, sorted_values: np.ndarray) -> float:
@@ -262,6 +290,13 @@ def _empirical_cdf(value: float, sorted_values: np.ndarray) -> float:
     rank = np.searchsorted(sorted_values, value, side="right")
     u = rank / (n + 1)  # (n+1) denominator keeps u strictly inside (0, 1)
     return float(np.clip(u, 1e-6, 1 - 1e-6))
+
+
+def _empirical_cdf_batch(values: np.ndarray, sorted_values: np.ndarray) -> np.ndarray:
+    """Vectorized `_empirical_cdf` over an array of values (same formula)."""
+    n = len(sorted_values)
+    rank = np.searchsorted(sorted_values, values, side="right")
+    return np.clip(rank / (n + 1), 1e-6, 1 - 1e-6)
 
 
 def fit_odd_copula(df: pd.DataFrame, variables: List[str] = None) -> ODDCopulaModel:
@@ -282,9 +317,7 @@ def fit_odd_copula(df: pd.DataFrame, variables: List[str] = None) -> ODDCopulaMo
 
     normal_scores = np.column_stack(
         [
-            stats.norm.ppf(
-                [_empirical_cdf(x, sorted_samples[v]) for x in df[v].to_numpy()]
-            )
+            stats.norm.ppf(_empirical_cdf_batch(df[v].to_numpy(dtype=np.float64), sorted_samples[v]))
             for v in variables
         ]
     )
@@ -298,8 +331,13 @@ def fit_odd_copula(df: pd.DataFrame, variables: List[str] = None) -> ODDCopulaMo
         density_percentiles=np.array([]),
     )
 
-    densities = np.array([odd_density(model, dict(zip(variables, row))) for row in df[variables].to_numpy()])
+    # Evaluate the training-set densities in one batched pass (GPU if
+    # available) instead of one scalar odd_density() call per row.
+    from src.odd.copula_gpu import odd_density_batch
+
+    densities = odd_density_batch(model, df[variables])
     model.density_percentiles = np.sort(densities)
+    density_cutpoints(model)  # populate the cache while we're here
     return model
 
 
@@ -349,8 +387,7 @@ def classify_odd_region(model: ODDCopulaModel, x: Dict[str, float]) -> str:
         One of "within", "near", "outside".
     """
     density = odd_density(model, x)
-    p15 = np.percentile(model.density_percentiles, 15)
-    p50 = np.percentile(model.density_percentiles, 50)
+    p15, p50 = density_cutpoints(model)
 
     if density < p15:
         return "outside"
@@ -400,9 +437,9 @@ if __name__ == "__main__":
     save_odd_copula(copula, copula_path)
     print(f"\nSaved ODD copula model -> '{copula_path}'")
 
-    regions = features_df[copula.variables].apply(
-        lambda row: classify_odd_region(copula, dict(zip(copula.variables, row))), axis=1
-    )
+    from src.odd.copula_gpu import classify_odd_region_batch
+
+    regions = pd.Series(classify_odd_region_batch(copula, features_df))
     print("\nODD region distribution:")
     print(regions.value_counts())
 
