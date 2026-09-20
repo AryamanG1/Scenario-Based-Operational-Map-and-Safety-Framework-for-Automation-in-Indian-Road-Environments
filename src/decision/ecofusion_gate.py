@@ -54,6 +54,7 @@ from sklearn.ensemble import RandomForestRegressor
 
 from src.perception.multi_stream_fusion import STREAMS, calibrate_references, compute_stream_reliabilities
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 RANDOM_STATE = 42
 STEM_FEATURES = ("brightness", "visibility", "wetness")
 DEFAULT_GAMMA = 0.5  # matches Malawade et al.'s own experimental choice
@@ -102,7 +103,7 @@ def profile_branch_latencies(
     """
     from src.perception.feature_extraction import run_detection
 
-    img_tensor = torch.tensor(image).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+    img_tensor = torch.tensor(image).permute(2, 0, 1).float().unsqueeze(0).to(DEVICE) / 255.0
 
     segnet_model.eval()
     start = time.perf_counter()
@@ -316,11 +317,11 @@ def run_selected_branches(
     results: Dict[str, object] = {}
 
     if "segnet_mask" in config:
-        img_tensor = torch.tensor(image).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+        img_tensor = torch.tensor(image).permute(2, 0, 1).float().unsqueeze(0).to(DEVICE) / 255.0
         segnet_model.eval()
         with torch.no_grad():
             output = segnet_model(img_tensor)
-        results["mask"] = output.argmax(dim=1).squeeze(0).numpy().astype(np.uint8)
+        results["mask"] = output.argmax(dim=1).squeeze(0).cpu().numpy().astype(np.uint8)
 
     if "yolo_detections" in config:
         results["detections"] = run_detection(image, yolo_model)
