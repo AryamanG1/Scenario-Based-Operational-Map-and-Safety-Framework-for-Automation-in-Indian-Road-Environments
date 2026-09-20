@@ -1,5 +1,5 @@
-# === MARKER: COMBINED_DATASETS_PIPELINE_V1 ===
-# If `grep -n "COMBINED_DATASETS_PIPELINE_V1" main.py` finds this line, this
+# === MARKER: COMBINED_DATASETS_PIPELINE_V2 ===
+# If `grep -n "COMBINED_DATASETS_PIPELINE_V2" main.py` finds this line, this
 # checkout includes the combined-dataset update: Stage 1/2 trains SegNet on
 # IDD-20K-II by default (--segnet_dataset idd20k; IDD-Lite is available via
 # --segnet_dataset idd-lite, and a concatenated corpus via --segnet_dataset
@@ -8,6 +8,12 @@
 # (both IDD_95kDetection + IDD_Detection parts, --idd117k_feature_limit 0),
 # and the Stage 2 detection benchmark defaults to IDD117K's val split, all
 # frames (--detection_gt idd117k --detection_frames 0).
+# V2 adds: Stage 7 now also evaluates the trained ODD classifier on a
+# genuinely held-out feature table (IDD-20K-II's + IDD117K's real val
+# splits, never touched by any training step) via evaluate_on_holdout(),
+# on by default (--skip_holdout_eval to disable) -- distinct from
+# train_odd_classifier()'s own internal random-split test accuracy, which
+# only measures held-out rows from the SAME train-sourced pool.
 """Orchestrates the full 7-stage ODD safety-framework pipeline end-to-end.
 
 Stages, matching the capstone proposal's actual architecture (not the
@@ -69,6 +75,7 @@ from src.odd.odd_boundary import (
 )
 from src.odd.odd_classifier import (
     combine_stage_outputs,
+    evaluate_on_holdout,
     load_and_clean_features,
     plot_confusion_matrix,
     plot_feature_importance,
@@ -97,7 +104,12 @@ from src.common.paths import (
     FEATURES_CSV,
     FEATURES_IDD117K_CSV,
     FEATURES_IDD117K_GT_CSV,
+    FEATURES_IDD117K_VAL_CSV,
+    FEATURES_IDD117K_VAL_GT_CSV,
+    FEATURES_VAL_CSV,
+    FEATURES_VAL_COMBINED_CSV,
     FEATURE_SCALER_PATH as SCALER_PATH,
+    ODD_CLASSIFIER_HOLDOUT_EVAL_JSON,
     ODD_CLASSIFIER_PATH as CLASSIFIER_PATH,
     ODD_COPULA_PATH,
     PIPELINE_STATS_JS,
@@ -209,6 +221,21 @@ def _parse_args() -> argparse.Namespace:
         help="Frames to extract IDD117K features from (0 = all ~96,897 train frames). "
         "Defaults to 0 if a GPU is detected; must be set explicitly on CPU.",
     )
+    parser.add_argument(
+        "--skip_holdout_eval",
+        action="store_true",
+        help="Skip Stage 7's held-out evaluation of the ODD classifier against the "
+        "real val splits of IDD-20K-II + IDD117K (images never used in any training "
+        "or the training feature table) -- reverts to only the internal random-split "
+        "test accuracy train_odd_classifier() already reports.",
+    )
+    parser.add_argument(
+        "--holdout_limit",
+        type=int,
+        default=0,
+        help="Frames to sample from each dataset's real val split for the held-out "
+        "evaluation (0 = all: 1,055 IDD-20K-II val + up to 9,977 IDD117K val).",
+    )
     parser.add_argument("--carla_ticks", type=int, default=50, help="Number of Stage 8 ticks to run (only used with --carla).")
     parser.add_argument("--carla_config", type=str, default=CARLA_CONFIG_JSON, help="Path to a carla_config.json (only used with --carla).")
     args = parser.parse_args()
@@ -237,7 +264,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     """Runs Stages 1-7 of the ODD safety-framework pipeline end-to-end."""
     args = _parse_args()
-    print("MARKER: COMBINED_DATASETS_PIPELINE_V1")
+    print("MARKER: COMBINED_DATASETS_PIPELINE_V2")
 
     print("=" * 60)
     print("STAGE 1: Input Data")
@@ -384,6 +411,38 @@ def main() -> None:
     joblib.dump(feature_scaler, SCALER_PATH)
     odd_accuracy = accuracy_score(y_test, y_pred)
 
+    holdout_accuracy = None
+    if not args.skip_holdout_eval:
+        print("Building held-out validation feature table (real val splits, never used in any training step)...")
+        val_images, val_labels = load_idd20k_split(IDD20K_DIR, "val", limit=args.holdout_limit or None)
+        val_features_df = extract_all_features(val_images, val_labels, segnet, yolo, save_path=FEATURES_VAL_CSV)
+
+        val_117k_pairs = sample_pairs(list_pairs(IDD117K_95K_DIR, "val"), args.holdout_limit or None)
+        val_features_117k_df = extract_features_streaming(
+            val_117k_pairs, segnet, yolo,
+            save_path=FEATURES_IDD117K_VAL_CSV,
+            gt_save_path=FEATURES_IDD117K_VAL_GT_CSV,
+        )
+        val_combined_df = pd.concat([val_features_df, val_features_117k_df], ignore_index=True)
+        val_combined_df.to_csv(FEATURES_VAL_COMBINED_CSV, index=False)
+        print(
+            f"Held-out val corpus: {len(val_images)} IDD-20K-II + {len(val_117k_pairs)} "
+            f"IDD117K = {len(val_combined_df)} rows -> '{FEATURES_VAL_COMBINED_CSV}'"
+        )
+
+        holdout_metrics, y_holdout, y_holdout_pred = evaluate_on_holdout(
+            model, feature_scaler, label_encoder, X.columns.tolist(), FEATURES_VAL_COMBINED_CSV
+        )
+        plot_confusion_matrix(
+            y_holdout, y_holdout_pred, label_encoder,
+            filename="confusion_matrix_holdout.png",
+            title="ODD Classifier Confusion Matrix (held-out val splits)",
+        )
+        with open(ODD_CLASSIFIER_HOLDOUT_EVAL_JSON, "w") as f:
+            json.dump(holdout_metrics, f, indent=2)
+        print(f"Wrote held-out evaluation -> '{ODD_CLASSIFIER_HOLDOUT_EVAL_JSON}'")
+        holdout_accuracy = holdout_metrics["accuracy"]
+
     sae_level = classify_sae_level(THIS_PROJECT_DDT)
     print(f"This system's SAE level: {sae_level} ({LEVEL_NAMES[sae_level]})")
 
@@ -434,7 +493,9 @@ def main() -> None:
     if final_val_loss is not None:
         print(f"SegNet final validation loss: {final_val_loss:.4f}")
     print(f"YOLO vehicle detection AP ({gt_source}): {detection_bench['ap']:.4f}")
-    print(f"ODD classifier test accuracy: {odd_accuracy:.4f}")
+    print(f"ODD classifier test accuracy (internal random split of train pool): {odd_accuracy:.4f}")
+    if holdout_accuracy is not None:
+        print(f"ODD classifier held-out accuracy (real val splits, never trained on): {holdout_accuracy:.4f}")
     print(f"P(worst 5% ODD-space scene): {risk_result.failure_probability:.4f}")
     print(f"System SAE level: {sae_level} ({LEVEL_NAMES[sae_level]})")
     print("Final combined mode distribution:")

@@ -311,6 +311,8 @@ def plot_confusion_matrix(
     y_pred: np.ndarray,
     label_encoder: LabelEncoder,
     save_dir: str = PLOTS_DIR,
+    filename: str = "confusion_matrix.png",
+    title: str = "ODD Classifier Confusion Matrix",
 ) -> None:
     """Plots and saves a confusion-matrix heatmap.
 
@@ -320,6 +322,10 @@ def plot_confusion_matrix(
         label_encoder: Fitted LabelEncoder, used for correctly-ordered axis
             labels regardless of its actual (alphabetical) class order.
         save_dir: Directory to save the plot into.
+        filename: Output filename within save_dir. Override this (e.g. to
+            "confusion_matrix_holdout.png") when plotting a second
+            confusion matrix so it doesn't overwrite the first.
+        title: Plot title.
     """
     ordered_labels = label_encoder.transform(label_encoder.classes_)
     cm = confusion_matrix(y_test, y_pred, labels=ordered_labels)
@@ -335,9 +341,9 @@ def plot_confusion_matrix(
     )
     plt.xlabel("Predicted")
     plt.ylabel("Actual")
-    plt.title("ODD Classifier Confusion Matrix")
+    plt.title(title)
     os.makedirs(save_dir, exist_ok=True)
-    plt.savefig(os.path.join(save_dir, "confusion_matrix.png"))
+    plt.savefig(os.path.join(save_dir, filename))
     plt.close()
 
 
@@ -366,6 +372,66 @@ def plot_feature_importance(
     os.makedirs(save_dir, exist_ok=True)
     plt.savefig(os.path.join(save_dir, "feature_importance.png"))
     plt.close()
+
+
+def evaluate_on_holdout(
+    model: RandomForestClassifier,
+    feature_scaler: FeatureScaler,
+    label_encoder: LabelEncoder,
+    train_feature_columns: List[str],
+    csv_path: str,
+) -> Tuple[dict, np.ndarray, np.ndarray]:
+    """Evaluates an already-trained ODD classifier on genuinely held-out data.
+
+    Unlike train_odd_classifier()'s internal train_test_split (a random
+    slice of the SAME pool of images used to build the training feature
+    table), this is meant to be called on a feature CSV built from a
+    dataset's real val split -- images never touched by SegNet training,
+    training-feature extraction, or classifier training. Applies the
+    ALREADY-FITTED feature_scaler and label_encoder from training via
+    their .transform() (never .fit_transform()), so nothing about the
+    held-out data's own distribution leaks into preprocessing -- this is
+    what makes the resulting accuracy a genuine generalization estimate.
+
+    Args:
+        model: Trained RandomForestClassifier (from train_odd_classifier).
+        feature_scaler: The FeatureScaler fitted during training.
+        label_encoder: The LabelEncoder fitted during training.
+        train_feature_columns: X.columns.tolist() from training, so the
+            held-out data is restricted to the exact same (variance/
+            correlation-pruned) column set the model was actually fit on --
+            feature_scaler.transform() alone returns the unpruned set.
+        csv_path: Path to a raw feature CSV built from held-out images.
+
+    Returns:
+        A tuple (metrics, y_true, y_pred).
+    """
+    df = pd.read_csv(csv_path).fillna(0)
+
+    df_scaled = feature_scaler.transform(df)
+    modes = df_scaled.apply(assign_mode, axis=1)
+    y_true = label_encoder.transform(modes)
+
+    X_holdout = df_scaled[train_feature_columns]
+    y_pred = model.predict(X_holdout)
+
+    accuracy = accuracy_score(y_true, y_pred)
+    f1 = f1_score(y_true, y_pred, average="weighted")
+    report = classification_report(
+        y_true, y_pred, target_names=label_encoder.classes_, output_dict=True
+    )
+
+    print(f"Held-out accuracy: {accuracy:.4f}")
+    print(f"Held-out weighted F1: {f1:.4f}")
+    print(classification_report(y_true, y_pred, target_names=label_encoder.classes_))
+
+    metrics = {
+        "num_holdout_rows": len(df),
+        "accuracy": accuracy,
+        "weighted_f1": f1,
+        "classification_report": report,
+    }
+    return metrics, y_true, y_pred
 
 
 # --------------------------------------------------------------------------

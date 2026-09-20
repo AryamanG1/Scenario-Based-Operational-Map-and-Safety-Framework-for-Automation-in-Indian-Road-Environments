@@ -84,6 +84,15 @@ FEATURES_IDD117K_GT_CSV = os.path.join(OUTPUTS_DIR, "final_features_idd117k_gt.c
 # itself re-read and re-concatenated, so repeated runs can't double-count.
 FEATURES_COMBINED_CSV = os.path.join(OUTPUTS_DIR, "final_features_combined.csv")
 
+# Genuinely held-out evaluation (real val splits, never touched by SegNet
+# training, feature extraction for the training table, or classifier
+# training) -- see main.py Stage 7 and odd_classifier.evaluate_on_holdout.
+FEATURES_VAL_CSV = os.path.join(OUTPUTS_DIR, "final_features_val.csv")
+FEATURES_IDD117K_VAL_CSV = os.path.join(OUTPUTS_DIR, "final_features_idd117k_val.csv")
+FEATURES_IDD117K_VAL_GT_CSV = os.path.join(OUTPUTS_DIR, "final_features_idd117k_val_gt.csv")
+FEATURES_VAL_COMBINED_CSV = os.path.join(OUTPUTS_DIR, "final_features_val_combined.csv")
+ODD_CLASSIFIER_HOLDOUT_EVAL_JSON = os.path.join(OUTPUTS_DIR, "odd_classifier_holdout_eval.json")
+
 # --- IDD-20K-II (polygon segmentation, the SegNet training upgrade) ----------
 # IDD-Lite ships only 1,403 train images at 320x224. IDD-20K-II ships 7,034 at
 # 1920x1080 with full polygon ground truth, which must be rasterized into masks
