@@ -289,7 +289,9 @@ def train_odd_classifier(
         X, y, test_size=0.2, random_state=RANDOM_STATE
     )
 
-    model = RandomForestClassifier(n_estimators=200, random_state=RANDOM_STATE)
+    # n_jobs=-1 parallelizes tree building across cores; with a fixed
+    # random_state the resulting forest is identical to the single-threaded fit.
+    model = RandomForestClassifier(n_estimators=200, random_state=RANDOM_STATE, n_jobs=-1)
     model.fit(X_train, y_train)
 
     y_pred = model.predict(X_test)

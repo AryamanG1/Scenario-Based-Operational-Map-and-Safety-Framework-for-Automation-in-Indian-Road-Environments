@@ -149,11 +149,80 @@ def _detect_layout(split_dir: str) -> Tuple[str, str, str]:
     return image_dir, "", ""
 
 
+def _list_pairs_from_split_file(part_dir: str, split: str) -> List[Tuple[str, str]]:
+    """Pairs images with annotations for the flat, list-file IDD_Detection layout.
+
+    The original 2018 IDD_Detection release has no per-split directories:
+
+        <part_dir>/JPEGImages/<camera>/<sequence>/<frame>.jpg
+        <part_dir>/Annotations/<camera>/<sequence>/<frame>.xml
+        <part_dir>/{train,val,test}.txt   # one '<camera>/<sequence>/<frame>' per line
+
+    Args:
+        part_dir: The IDD_Detection directory containing JPEGImages/ and the
+            split list files.
+        split: One of "train", "val", "test".
+
+    Returns:
+        A sorted list of (image_path, annotation_path) pairs, in the same
+        format as `list_pairs`. Lines whose image is missing are skipped;
+        lines whose annotation is missing are skipped for train/val and kept
+        with annotation_path "" for test.
+
+    Raises:
+        FileNotFoundError: If `<part_dir>/<split>.txt` does not exist.
+    """
+    image_dir = os.path.join(part_dir, "JPEGImages")
+    ann_dir = os.path.join(part_dir, "Annotations")
+    list_path = os.path.join(part_dir, f"{split}.txt")
+    if not os.path.isfile(list_path):
+        raise FileNotFoundError(
+            f"'{part_dir}' has a flat JPEGImages/ layout but no '{split}.txt' split "
+            f"list next to it. The IDD_Detection release ships train.txt / val.txt / "
+            f"test.txt at the top of the archive; copy them into '{part_dir}'."
+        )
+
+    with open(list_path) as handle:
+        stems = [line.strip() for line in handle if line.strip()]
+
+    pairs: List[Tuple[str, str]] = []
+    missing_img = missing_ann = 0
+    for stem in stems:
+        stem = os.path.splitext(stem)[0] if stem.lower().endswith((".jpg", ".jpeg", ".xml")) else stem
+        img_path = os.path.join(image_dir, stem + ".jpg")
+        if not os.path.isfile(img_path):
+            missing_img += 1
+            continue
+        ann_path = os.path.join(ann_dir, stem + ".xml")
+        if not os.path.isfile(ann_path):
+            if split == "test":
+                pairs.append((img_path, ""))
+            else:
+                missing_ann += 1
+            continue
+        pairs.append((img_path, ann_path))
+
+    if missing_img:
+        print(f"Warning: {missing_img} line(s) in '{list_path}' have no image file; skipped.")
+    if missing_ann:
+        print(f"Warning: {missing_ann} image(s) listed in '{list_path}' have no annotation file; skipped.")
+    return sorted(pairs)
+
+
 def list_pairs(part_dir: str, split: str = "train") -> List[Tuple[str, str]]:
     """Pairs every image in a split with its annotation file.
 
-    Pairing is by identical relative path (`<seq>/<frame>`), differing only in
-    the root directory and the extension.
+    Two on-disk layouts are supported and auto-detected:
+
+    1. Per-split directories (IDD_95kDetection, and IDD_Detection if it was
+       re-organised): `<part_dir>/<split>/{leftImg8bit|JPEGImages}/<seq>/*.jpg`
+       with matching `Labels_json/` or `Annotations/`.
+    2. The original flat IDD_Detection release: `<part_dir>/JPEGImages/` and
+       `<part_dir>/Annotations/` nested `<camera>/<sequence>/<frame>`, with
+       the split given by `<part_dir>/<split>.txt`.
+
+    Pairing is by identical relative path, differing only in the root
+    directory and the extension.
 
     Args:
         part_dir: An IDD117K part directory (IDD_95kDetection or IDD_Detection).
@@ -165,6 +234,9 @@ def list_pairs(part_dir: str, split: str = "train") -> List[Tuple[str, str]]:
         labels) every annotation_path is "".
     """
     split_dir = os.path.join(part_dir, split)
+    if not os.path.isdir(split_dir) and os.path.isdir(os.path.join(part_dir, "JPEGImages")):
+        return _list_pairs_from_split_file(part_dir, split)
+
     image_dir, ann_dir, ext = _detect_layout(split_dir)
 
     image_paths = sorted(glob.glob(os.path.join(image_dir, "*", "*.jpg")))

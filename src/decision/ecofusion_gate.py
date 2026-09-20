@@ -178,7 +178,7 @@ def fit_deep_gate(fused_df: pd.DataFrame) -> RandomForestRegressor:
     """
     X = fused_df[list(STEM_FEATURES)].to_numpy()
     y = fused_df[[f"reliability_{s}" for s in STREAMS]].to_numpy()
-    model = RandomForestRegressor(n_estimators=100, random_state=RANDOM_STATE)
+    model = RandomForestRegressor(n_estimators=100, random_state=RANDOM_STATE, n_jobs=-1)
     model.fit(X, y)
     return model
 
