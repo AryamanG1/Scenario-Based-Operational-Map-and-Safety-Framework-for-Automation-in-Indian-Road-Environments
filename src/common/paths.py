@@ -50,6 +50,9 @@ MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 SEGNET_CHECKPOINT = os.path.join(MODELS_DIR, "refined_segnet.pth")
 YOLO_WEIGHTS = os.path.join(MODELS_DIR, "yolov8n.pt")
 ODD_CLASSIFIER_PATH = os.path.join(MODELS_DIR, "odd_classifier.pkl")
+# Thresholds that turn annotation-derived scene complexity into the
+# Normal/Degraded/Takeover label (see odd_classifier.fit_gt_label_thresholds).
+ODD_GT_LABEL_THRESHOLDS_JSON = os.path.join(MODELS_DIR, "odd_gt_label_thresholds.json")
 FEATURE_SCALER_PATH = os.path.join(MODELS_DIR, "feature_scaler.pkl")
 ODD_COPULA_PATH = os.path.join(MODELS_DIR, "odd_copula.pkl")
 ECOFUSION_DEEP_GATE_PATH = os.path.join(MODELS_DIR, "ecofusion_deep_gate.pkl")
@@ -83,6 +86,10 @@ FEATURES_IDD117K_GT_CSV = os.path.join(OUTPUTS_DIR, "final_features_idd117k_gt.c
 # a fresh concat of FEATURES_CSV + FEATURES_IDD117K_CSV, never a file that is
 # itself re-read and re-concatenated, so repeated runs can't double-count.
 FEATURES_COMBINED_CSV = os.path.join(OUTPUTS_DIR, "final_features_combined.csv")
+# Annotation-derived object counts aligned row-for-row with FEATURES_COMBINED_CSV
+# (NaN for rows whose source dataset has no box annotations). Used only as the
+# ODD classifier's LABEL source, never as a model input.
+FEATURES_COMBINED_GT_CSV = os.path.join(OUTPUTS_DIR, "final_features_combined_gt.csv")
 
 # Genuinely held-out evaluation (real val splits, never touched by SegNet
 # training, feature extraction for the training table, or classifier
@@ -91,6 +98,7 @@ FEATURES_VAL_CSV = os.path.join(OUTPUTS_DIR, "final_features_val.csv")
 FEATURES_IDD117K_VAL_CSV = os.path.join(OUTPUTS_DIR, "final_features_idd117k_val.csv")
 FEATURES_IDD117K_VAL_GT_CSV = os.path.join(OUTPUTS_DIR, "final_features_idd117k_val_gt.csv")
 FEATURES_VAL_COMBINED_CSV = os.path.join(OUTPUTS_DIR, "final_features_val_combined.csv")
+FEATURES_VAL_COMBINED_GT_CSV = os.path.join(OUTPUTS_DIR, "final_features_val_combined_gt.csv")
 ODD_CLASSIFIER_HOLDOUT_EVAL_JSON = os.path.join(OUTPUTS_DIR, "odd_classifier_holdout_eval.json")
 
 # --- IDD-20K-II (polygon segmentation, the SegNet training upgrade) ----------

@@ -80,8 +80,12 @@ from src.odd.odd_boundary import (
     save_odd_copula,
 )
 from src.odd.odd_classifier import (
+    GT_COUNT_COLUMNS,
+    LABEL_SOURCE_GT,
+    LABEL_SOURCE_RULE,
     combine_stage_outputs,
     evaluate_on_holdout,
+    fit_gt_label_thresholds,
     load_and_clean_features,
     plot_confusion_matrix,
     plot_feature_importance,
@@ -107,6 +111,7 @@ from src.common.paths import (
     FEASIBILITY_MAP_CSV,
     FEATURES_CLEANED_CSV as CLEANED_CSV,
     FEATURES_COMBINED_CSV,
+    FEATURES_COMBINED_GT_CSV,
     FEATURES_CSV,
     FEATURES_IDD117K_CSV,
     FEATURES_IDD117K_GT_CSV,
@@ -114,9 +119,11 @@ from src.common.paths import (
     FEATURES_IDD117K_VAL_GT_CSV,
     FEATURES_VAL_CSV,
     FEATURES_VAL_COMBINED_CSV,
+    FEATURES_VAL_COMBINED_GT_CSV,
     FEATURE_SCALER_PATH as SCALER_PATH,
     ODD_CLASSIFIER_HOLDOUT_EVAL_JSON,
     ODD_CLASSIFIER_PATH as CLASSIFIER_PATH,
+    ODD_GT_LABEL_THRESHOLDS_JSON,
     ODD_COPULA_PATH,
     PIPELINE_STATS_JS,
     SEGNET_CHECKPOINT,
@@ -243,6 +250,18 @@ def _parse_args() -> argparse.Namespace:
         "Defaults to 0 if a GPU is detected; must be set explicitly on CPU.",
     )
     parser.add_argument(
+        "--label_source",
+        choices=(LABEL_SOURCE_GT, LABEL_SOURCE_RULE),
+        default=LABEL_SOURCE_GT,
+        help="Where the Stage 7 ODD classifier's training labels come from. 'gt' "
+        "(default) derives them from IDD117K's human box annotations, so the "
+        "classifier must predict an annotation-derived quantity from perception "
+        "features and its accuracy is a real generalization measure; rows without "
+        "annotations (IDD-20K-II) are excluded from classifier training only. 'rule' "
+        "is the legacy behaviour: assign_mode() applied to the classifier's own inputs, "
+        "which any model fits at ~100%% -- kept for comparison, not for reporting.",
+    )
+    parser.add_argument(
         "--skip_holdout_eval",
         action="store_true",
         help="Skip Stage 7's held-out evaluation of the ODD classifier against the "
@@ -280,6 +299,30 @@ def _parse_args() -> argparse.Namespace:
             )
 
     return args
+
+
+def _write_combined_gt_sidecar(num_unannotated_rows: int, gt_csv: str, num_gt_rows: int, out_csv: str) -> None:
+    """Writes a ground-truth sidecar aligned with a (base + IDD117K) feature table.
+
+    The base corpus (IDD-Lite / IDD-20K-II) has no box annotations, so its
+    rows get NaN counts; the IDD117K rows take their counts from `gt_csv`.
+    The result lines up row-for-row with the combined feature CSV and is
+    what the Stage 7 classifier uses as its label source.
+    """
+    if not os.path.isfile(gt_csv):
+        print(f"Warning: '{gt_csv}' not found; no ground-truth sidecar written (Stage 7 will fall back to rule labels).")
+        return
+    gt_117k = pd.read_csv(gt_csv)
+    if len(gt_117k) != num_gt_rows:
+        print(
+            f"Warning: '{gt_csv}' has {len(gt_117k)} rows but the IDD117K feature table has "
+            f"{num_gt_rows}; no ground-truth sidecar written (delete both CSVs and re-extract)."
+        )
+        return
+    blank = pd.DataFrame(np.nan, index=range(num_unannotated_rows), columns=GT_COUNT_COLUMNS)
+    combined = pd.concat([blank, gt_117k[GT_COUNT_COLUMNS]], ignore_index=True)
+    combined.to_csv(out_csv, index=False)
+    print(f"Ground-truth label sidecar: {num_gt_rows} annotated + {num_unannotated_rows} unannotated rows -> '{out_csv}'")
 
 
 _last_banner_time = None
@@ -371,9 +414,11 @@ def main() -> None:
                 num_workers=args.num_workers,
             )
 
+        num_base_rows = len(features_df)
         features_df = pd.concat([features_df, features_117k_df], ignore_index=True)
         features_df.to_csv(FEATURES_COMBINED_CSV, index=False)
         print(f"Combined feature corpus (base + IDD117K): {len(features_df)} rows -> '{FEATURES_COMBINED_CSV}'")
+        _write_combined_gt_sidecar(num_base_rows, FEATURES_IDD117K_GT_CSV, len(features_117k_df), FEATURES_COMBINED_GT_CSV)
 
     lane_result = detect_lanes(images[0], labels[0])
     print(f"Lane detection sample: {compute_lane_features(lane_result)}")
@@ -431,7 +476,22 @@ def main() -> None:
 
     _banner("STAGE 7: Decision System")
     stage7_features_csv = FEATURES_COMBINED_CSV if not args.skip_idd117k_features else FEATURES_CSV
-    X, df_cleaned, y, feature_scaler, label_encoder = load_and_clean_features(stage7_features_csv)
+    label_gt_csv = None
+    gt_thresholds = None
+    if args.label_source == LABEL_SOURCE_GT:
+        if not args.skip_idd117k_features and os.path.isfile(FEATURES_COMBINED_GT_CSV):
+            label_gt_csv = FEATURES_COMBINED_GT_CSV
+            gt_thresholds = fit_gt_label_thresholds(pd.read_csv(label_gt_csv))
+            gt_thresholds.save(ODD_GT_LABEL_THRESHOLDS_JSON)
+            print(f"Saved ground-truth label thresholds -> '{ODD_GT_LABEL_THRESHOLDS_JSON}'")
+        else:
+            print(
+                "Warning: --label_source gt requested but no ground-truth sidecar is available "
+                "(needs IDD117K features, i.e. not --skip_idd117k_features); falling back to rule labels."
+            )
+    X, df_cleaned, y, feature_scaler, label_encoder = load_and_clean_features(
+        stage7_features_csv, gt_csv_path=label_gt_csv, gt_thresholds=gt_thresholds
+    )
     df_cleaned.to_csv(CLEANED_CSV, index=False)
     model, X_test, y_test, y_pred = train_odd_classifier(X, y, model_path=CLASSIFIER_PATH)
     plot_confusion_matrix(y_test, y_pred, label_encoder)
@@ -457,13 +517,16 @@ def main() -> None:
         )
         val_combined_df = pd.concat([val_features_df, val_features_117k_df], ignore_index=True)
         val_combined_df.to_csv(FEATURES_VAL_COMBINED_CSV, index=False)
+        _write_combined_gt_sidecar(len(val_features_df), FEATURES_IDD117K_VAL_GT_CSV, len(val_features_117k_df), FEATURES_VAL_COMBINED_GT_CSV)
+        holdout_gt_csv = FEATURES_VAL_COMBINED_GT_CSV if (label_gt_csv and os.path.isfile(FEATURES_VAL_COMBINED_GT_CSV)) else None
         print(
             f"Held-out val corpus: {len(val_images)} IDD-20K-II + {len(val_117k_pairs)} "
             f"IDD117K = {len(val_combined_df)} rows -> '{FEATURES_VAL_COMBINED_CSV}'"
         )
 
         holdout_metrics, y_holdout, y_holdout_pred = evaluate_on_holdout(
-            model, feature_scaler, label_encoder, X.columns.tolist(), FEATURES_VAL_COMBINED_CSV
+            model, feature_scaler, label_encoder, X.columns.tolist(), FEATURES_VAL_COMBINED_CSV,
+            gt_csv_path=holdout_gt_csv, gt_thresholds=gt_thresholds,
         )
         plot_confusion_matrix(
             y_holdout, y_holdout_pred, label_encoder,
@@ -521,6 +584,7 @@ def main() -> None:
     if final_val_loss is not None:
         print(f"SegNet final validation loss: {final_val_loss:.4f}")
     print(f"YOLO vehicle detection AP ({gt_source}): {detection_bench['ap']:.4f}")
+    print(f"ODD classifier label source: {'ground-truth annotations' if label_gt_csv else 'assign_mode rule (NOT a generalization measure)'}")
     print(f"ODD classifier test accuracy (internal random split of train pool): {odd_accuracy:.4f}")
     if holdout_accuracy is not None:
         print(f"ODD classifier held-out accuracy (real val splits, never trained on): {holdout_accuracy:.4f}")

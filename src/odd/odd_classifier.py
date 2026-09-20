@@ -10,7 +10,9 @@ Stage 6's real-time monitoring status (perception_monitor.py) into the
 final decision.
 """
 
+import json
 import os
+from dataclasses import asdict, dataclass
 from typing import List, Optional, Tuple
 
 import cv2
@@ -180,10 +182,161 @@ class FeatureScaler:
 FeatureScaler.__module__ = "src.odd.odd_classifier"
 
 
+# --------------------------------------------------------------------------
+# Ground-truth (annotation-derived) labels
+# --------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. The original labelling ran assign_mode() -- a hand-written
+# rule -- on the SAME scaled perception features the RandomForest is trained
+# on. The label was therefore a deterministic function of the model's inputs,
+# and any classifier scores ~100% on it (train-split and held-out alike),
+# which measures nothing about generalization. That path is kept below as
+# LABEL_SOURCE_RULE for backwards compatibility, but it prints a warning.
+#
+# LABEL_SOURCE_GT instead derives the label from the dataset's human box
+# annotations (the *_gt.csv sidecars extract_features_streaming writes):
+# scene complexity S = number of annotated road users in the frame. The
+# classifier then has to predict an annotation-derived quantity from noisy
+# perception outputs (YOLO recall on IDD117K is ~18%), which is a genuine
+# learning problem and yields an honest accuracy. Rows whose source dataset
+# has no box annotations (IDD-Lite, IDD-20K-II) are excluded from classifier
+# training/evaluation; every other stage still uses them.
+
+LABEL_SOURCE_GT = "gt"
+LABEL_SOURCE_RULE = "rule"
+
+GT_COUNT_COLUMNS = [
+    "gt_num_vehicles",
+    "gt_num_two_wheelers",
+    "gt_num_autorickshaws",
+    "gt_num_pedestrians",
+    "gt_num_animals",
+]
+
+
+@dataclass
+class GTLabelThresholds:
+    """Cut points on annotation-derived scene complexity S.
+
+    S <= low  -> "Normal"; low < S <= high -> "Degraded"; S > high -> "Takeover".
+    Fitted once on the training pool (fit_gt_label_thresholds) and persisted
+    so the held-out evaluation uses exactly the same label definition.
+    """
+
+    low: float
+    high: float
+    low_percentile: float
+    high_percentile: float
+
+    def save(self, path: str) -> None:
+        with open(path, "w") as handle:
+            json.dump(asdict(self), handle, indent=2)
+
+    @classmethod
+    def load(cls, path: str) -> "GTLabelThresholds":
+        with open(path) as handle:
+            return cls(**json.load(handle))
+
+
+GTLabelThresholds.__module__ = "src.odd.odd_classifier"
+
+
+def gt_scene_complexity(gt_df: pd.DataFrame) -> pd.Series:
+    """Annotation-derived scene complexity: total annotated road users per frame.
+
+    Args:
+        gt_df: A ground-truth sidecar DataFrame with GT_COUNT_COLUMNS.
+
+    Returns:
+        A float Series (NaN where any count column is NaN, i.e. no annotations).
+    """
+    return gt_df[GT_COUNT_COLUMNS].sum(axis=1, skipna=False).astype(float)
+
+
+def fit_gt_label_thresholds(
+    gt_df: pd.DataFrame, low_percentile: float = 100.0 / 3, high_percentile: float = 200.0 / 3
+) -> GTLabelThresholds:
+    """Fits tertile cut points of scene complexity on the training pool.
+
+    Tertiles are used so the three classes are roughly balanced by
+    construction (an integer-valued S with many ties makes them only
+    approximately equal). The percentiles are stored alongside the values
+    so the definition is reproducible.
+
+    Args:
+        gt_df: Ground-truth sidecar rows of the TRAINING pool only.
+        low_percentile: Percentile of S at/below which a frame is "Normal".
+        high_percentile: Percentile of S above which a frame is "Takeover".
+
+    Returns:
+        A GTLabelThresholds.
+    """
+    complexity = gt_scene_complexity(gt_df).dropna()
+    if complexity.empty:
+        raise ValueError("No annotated rows to fit ground-truth label thresholds on.")
+    low = float(np.percentile(complexity, low_percentile))
+    high = float(np.percentile(complexity, high_percentile))
+    return GTLabelThresholds(low=low, high=high, low_percentile=low_percentile, high_percentile=high_percentile)
+
+
+def assign_gt_mode(gt_df: pd.DataFrame, thresholds: GTLabelThresholds) -> pd.Series:
+    """Maps annotation-derived scene complexity to Normal/Degraded/Takeover.
+
+    Args:
+        gt_df: Ground-truth sidecar DataFrame with GT_COUNT_COLUMNS.
+        thresholds: Cut points from fit_gt_label_thresholds().
+
+    Returns:
+        A Series of mode strings, NaN where the row has no annotations.
+    """
+    complexity = gt_scene_complexity(gt_df)
+    modes = pd.Series(
+        np.where(
+            complexity <= thresholds.low, "Normal",
+            np.where(complexity <= thresholds.high, "Degraded", "Takeover"),
+        ),
+        index=gt_df.index,
+        dtype=object,
+    )
+    modes[complexity.isna()] = np.nan
+    return modes
+
+
+def _majority_baseline(y: np.ndarray) -> float:
+    """Accuracy of always predicting the most frequent class -- the floor any
+    reported accuracy should be compared against."""
+    _, counts = np.unique(y, return_counts=True)
+    return float(counts.max() / counts.sum())
+
+
+def _read_gt_sidecar(gt_csv_path: str, expected_rows: int) -> pd.DataFrame:
+    gt_df = pd.read_csv(gt_csv_path)
+    if len(gt_df) != expected_rows:
+        raise ValueError(
+            f"Ground-truth sidecar '{gt_csv_path}' has {len(gt_df)} rows but the feature "
+            f"table has {expected_rows}; they must be aligned row-for-row."
+        )
+    missing = [c for c in GT_COUNT_COLUMNS if c not in gt_df.columns]
+    if missing:
+        raise ValueError(f"Ground-truth sidecar '{gt_csv_path}' lacks columns {missing}.")
+    return gt_df
+
+
 def load_and_clean_features(
     csv_path: str,
+    gt_csv_path: Optional[str] = None,
+    gt_thresholds: Optional[GTLabelThresholds] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, FeatureScaler, LabelEncoder]:
     """Loads, normalizes, labels, and prunes the raw feature CSV.
+
+    Label source:
+      * `gt_csv_path` given  -> LABEL_SOURCE_GT. Labels come from the
+        annotation sidecar via assign_gt_mode(); rows without annotations
+        are dropped from X / y (the scaler is still fitted on every row, so
+        it stays valid for the full corpus in later stages).
+      * `gt_csv_path` None   -> LABEL_SOURCE_RULE (legacy). assign_mode() on
+        the scaled inputs. Prints a warning: the resulting accuracy is not a
+        generalization measure.
 
     assign_mode() is run on the scaled-but-unpruned dataframe (not the
     variance/correlation-pruned one): a freshly computed feature could end
@@ -194,6 +347,11 @@ def load_and_clean_features(
     Args:
         csv_path: Path to final_features.csv (as produced by
             feature_extraction.extract_all_features).
+        gt_csv_path: Optional ground-truth sidecar aligned with csv_path.
+        gt_thresholds: Cut points for the GT labels. If None (and
+            gt_csv_path is given) they are fitted on this table's annotated
+            rows -- pass the persisted training thresholds for any table
+            that is NOT the training pool.
 
     Returns:
         A tuple (X, df_cleaned, y, feature_scaler, label_encoder):
@@ -222,7 +380,27 @@ def load_and_clean_features(
     scaled_values = minmax_scaler.fit_transform(df_norm[feature_columns])
     df_scaled = pd.DataFrame(scaled_values, columns=feature_columns, index=df_norm.index)
 
-    modes = df_scaled.apply(assign_mode, axis=1)
+    if gt_csv_path:
+        gt_df = _read_gt_sidecar(gt_csv_path, len(df))
+        if gt_thresholds is None:
+            gt_thresholds = fit_gt_label_thresholds(gt_df)
+        modes = assign_gt_mode(gt_df, gt_thresholds)
+        keep = modes.notna()
+        print(
+            f"Label source: ground-truth annotations ({int(keep.sum())} of {len(df)} rows have "
+            f"box annotations; the rest are excluded from classifier training). "
+            f"Scene-complexity cut points: Normal <= {gt_thresholds.low:g} < Degraded <= "
+            f"{gt_thresholds.high:g} < Takeover."
+        )
+        df_scaled = df_scaled[keep]
+        modes = modes[keep]
+    else:
+        print(
+            "WARNING: label source is the assign_mode() rule applied to the classifier's own "
+            "inputs. Any model scores ~100% on such labels; the accuracy below is NOT a "
+            "generalization measure. Pass a ground-truth sidecar to use annotation-derived labels."
+        )
+        modes = df_scaled.apply(assign_mode, axis=1)
 
     label_encoder = LabelEncoder()
     mode_encoded = label_encoder.fit_transform(modes)
@@ -230,6 +408,7 @@ def load_and_clean_features(
         "Label encoding:",
         dict(zip(label_encoder.classes_, label_encoder.transform(label_encoder.classes_))),
     )
+    print("Label distribution:", modes.value_counts().to_dict())
 
     variances = df_scaled.var()
     low_variance_cols = variances[variances < 0.001].index.tolist()
@@ -297,6 +476,7 @@ def train_odd_classifier(
     y_pred = model.predict(X_test)
     accuracy = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average="weighted")
+    print(f"Majority-class baseline accuracy: {_majority_baseline(np.asarray(y_test)):.4f}")
 
     print(f"Accuracy: {accuracy:.4f}")
     print(f"Weighted F1-Score: {f1:.4f}")
@@ -382,6 +562,8 @@ def evaluate_on_holdout(
     label_encoder: LabelEncoder,
     train_feature_columns: List[str],
     csv_path: str,
+    gt_csv_path: Optional[str] = None,
+    gt_thresholds: Optional[GTLabelThresholds] = None,
 ) -> Tuple[dict, np.ndarray, np.ndarray]:
     """Evaluates an already-trained ODD classifier on genuinely held-out data.
 
@@ -404,14 +586,31 @@ def evaluate_on_holdout(
             correlation-pruned) column set the model was actually fit on --
             feature_scaler.transform() alone returns the unpruned set.
         csv_path: Path to a raw feature CSV built from held-out images.
+        gt_csv_path: Ground-truth sidecar aligned with csv_path. Required for
+            annotation-derived labels; None falls back to the assign_mode()
+            rule (with the same caveat as in load_and_clean_features).
+        gt_thresholds: The TRAINING pool's persisted cut points. Must be
+            given with gt_csv_path -- refitting them here would define the
+            held-out label differently from the training label.
 
     Returns:
         A tuple (metrics, y_true, y_pred).
     """
     df = pd.read_csv(csv_path).fillna(0)
-
     df_scaled = feature_scaler.transform(df)
-    modes = df_scaled.apply(assign_mode, axis=1)
+
+    if gt_csv_path:
+        if gt_thresholds is None:
+            raise ValueError("gt_thresholds (fitted on the training pool) are required with gt_csv_path.")
+        gt_df = _read_gt_sidecar(gt_csv_path, len(df))
+        modes = assign_gt_mode(gt_df, gt_thresholds)
+        keep = modes.notna()
+        print(f"Held-out label source: ground-truth annotations ({int(keep.sum())} of {len(df)} rows annotated).")
+        df_scaled = df_scaled[keep]
+        modes = modes[keep]
+    else:
+        print("WARNING: held-out labels come from the assign_mode() rule on the inputs (see load_and_clean_features).")
+        modes = df_scaled.apply(assign_mode, axis=1)
     y_true = label_encoder.transform(modes)
 
     X_holdout = df_scaled[train_feature_columns]
@@ -419,6 +618,8 @@ def evaluate_on_holdout(
 
     accuracy = accuracy_score(y_true, y_pred)
     f1 = f1_score(y_true, y_pred, average="weighted")
+    baseline = _majority_baseline(y_true)
+    print(f"Held-out majority-class baseline accuracy: {baseline:.4f}")
     report = classification_report(
         y_true, y_pred, target_names=label_encoder.classes_, output_dict=True
     )
@@ -428,8 +629,11 @@ def evaluate_on_holdout(
     print(classification_report(y_true, y_pred, target_names=label_encoder.classes_))
 
     metrics = {
-        "num_holdout_rows": len(df),
+        "num_holdout_rows": int(len(y_true)),
+        "num_rows_in_csv": int(len(df)),
+        "label_source": LABEL_SOURCE_GT if gt_csv_path else LABEL_SOURCE_RULE,
         "accuracy": accuracy,
+        "majority_class_baseline_accuracy": baseline,
         "weighted_f1": f1,
         "classification_report": report,
     }
